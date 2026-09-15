@@ -62,7 +62,11 @@ final class AppState: ObservableObject {
         settings.performSetup(with: self)
         menuBarManager.performSetup(with: self)
 
-        if #available(macOS 26.0, *) {
+        if #available(macOS 27.0, *) {
+            // macOS 27 has no item windows: bounds come from Accessibility, and the
+            // owning process is known directly, without the item service.
+            Bridging.syntheticWindowBoundsProvider = MenuBarItemProvider27.currentBounds(for:)
+        } else if #available(macOS 26.0, *) {
             await MenuBarItemService.Connection.shared.start()
         }
 

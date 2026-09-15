@@ -331,6 +331,16 @@ extension MenuBarItemManager {
 
         itemCache = context.cache
         logger.debug("Updated menu bar item cache")
+        if #available(macOS 27.0, *) {
+            logger.info(
+                """
+                macOS 27 cache: \
+                visible=\(context.cache[.visible].map(\.tag.namespace.description).joined(separator: ","), privacy: .public) \
+                hidden=\(context.cache[.hidden].map(\.tag.namespace.description).joined(separator: ","), privacy: .public) \
+                alwaysHidden=\(context.cache[.alwaysHidden].map(\.tag.namespace.description).joined(separator: ","), privacy: .public)
+                """
+            )
+        }
     }
 
     /// Caches the current menu bar items, regardless of whether the
@@ -363,7 +373,11 @@ extension MenuBarItemManager {
                 return
             }
 
-            await enforceControlItemOrder(controlItems: controlItems)
+            // Moving items is not supported on macOS 27 yet (plan 2), so the dividers
+            // stay where macOS placed them.
+            if #unavailable(macOS 27.0) {
+                await enforceControlItemOrder(controlItems: controlItems)
+            }
             await uncheckedCacheItems(items: items, controlItems: controlItems, displayID: displayID)
         }
     }
@@ -375,6 +389,16 @@ extension MenuBarItemManager {
     /// the hidden and always-hidden sections are correctly ordered,
     /// arranging them into valid positions if needed.
     func cacheItemsIfNeeded() async {
+        if #available(macOS 27.0, *) {
+            // There is no item window list on macOS 27. A reorder keeps the synthetic
+            // identifiers, so the signature also carries each item's position.
+            let items = await MenuBarItem.getMenuBarItems(option: .activeSpace)
+            let signature = items.map { $0.windowID &+ UInt32(truncatingIfNeeded: Int($0.bounds.minX)) }
+            if await cacheActor.cachedItemWindowIDs != signature {
+                await cacheItemsRegardless(signature)
+            }
+            return
+        }
         let itemWindowIDs = Bridging.getMenuBarWindowList(option: [.itemsOnly, .activeSpace])
         if await cacheActor.cachedItemWindowIDs != itemWindowIDs {
             await cacheItemsRegardless(itemWindowIDs)

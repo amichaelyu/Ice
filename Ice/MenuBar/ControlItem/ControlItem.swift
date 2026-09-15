@@ -37,8 +37,12 @@ final class ControlItem {
                 Lengths.standard
             case .hidden, .alwaysHidden:
                 switch state {
-                case .showSection: Lengths.standard
-                case .hideSection: Lengths.expanded
+                case .showSection:
+                    Lengths.standard
+                case .hideSection:
+                    // macOS 27 discards status items wider than the status area, so the
+                    // section is concealed by `Concealer27` instead of pushed off screen.
+                    if #available(macOS 27.0, *) { Lengths.standard } else { Lengths.expanded }
                 }
             }
         }
@@ -88,6 +92,8 @@ final class ControlItem {
                     self.constraint = nil
                 }
 
+                // On macOS 27, Ice finds its own items through Accessibility by this identifier.
+                button.setAccessibilityIdentifier(controlItem.identifier.rawValue)
                 button.target = controlItem
                 button.action = #selector(controlItem.performAction)
                 button.sendAction(on: [.leftMouseDown, .rightMouseUp])
