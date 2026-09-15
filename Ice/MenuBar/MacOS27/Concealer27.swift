@@ -23,6 +23,9 @@ final class Concealer27 {
     private var applyTask: Task<Void, Never>?
     private var suspendedUntil: ContinuousClock.Instant?
 
+    /// Applications shown for a moment, with the number of callers showing each.
+    private var temporarilyShown = [String: Int]()
+
     /// Whether any application is meant to be concealed right now.
     private(set) var isConcealing = false
 
@@ -72,7 +75,11 @@ final class Concealer27 {
         let applications = NSWorkspace.shared.runningApplications
         let running = Set(applications.compactMap(\.bundleIdentifier))
         let layout = SectionLayout27.effectiveLayout(observed: [:], saved: savedLayout, running: running)
-        let target = ConcealmentPlanner27.concealedSets(layout: layout, state: revealState(appState))
+        let target = ConcealmentPlanner27.concealedSets(
+            layout: layout,
+            state: revealState(appState),
+            temporarilyShown: Set(temporarilyShown.keys)
+        )
         let concealed = ConcealmentPlanner27.effectivelyConcealed(sets: target)
         isConcealing = !target.isEmpty
         concealedPIDs = Set(applications.compactMap { application in
@@ -116,6 +123,22 @@ final class Concealer27 {
             self?.suspendedUntil = nil
             self?.update()
         }
+    }
+
+    /// Shows an application for a moment, to click or photograph its item.
+    /// Every call must be balanced by ``endTemporaryShow(bundleID:)``.
+    func showTemporarily(bundleID: String) {
+        temporarilyShown[bundleID, default: 0] += 1
+        update()
+    }
+
+    /// Ends one ``showTemporarily(bundleID:)``.
+    func endTemporaryShow(bundleID: String) {
+        guard let count = temporarilyShown[bundleID] else {
+            return
+        }
+        temporarilyShown[bundleID] = count > 1 ? count - 1 : nil
+        update()
     }
 
     /// Builds the item cache from the saved layout rather than the order on the bar.

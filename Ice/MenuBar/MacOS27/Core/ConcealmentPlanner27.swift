@@ -33,6 +33,15 @@ enum ConcealmentPlanner27 {
         }
     }
 
+    /// The concealed sets for the given state, with the temporarily shown applications
+    /// allowed in every assertion: an item that is clicked or photographed appears for a moment.
+    static func concealedSets(layout: [String: MacOS27Section], state: RevealState27, temporarilyShown: Set<String>) -> [Set<String>] {
+        concealedSets(layout: layout, state: state).compactMap { concealed in
+            let remaining = concealed.subtracting(temporarilyShown)
+            return remaining.isEmpty ? nil : remaining
+        }
+    }
+
     /// The allowlist an assertion needs to conceal exactly the given applications.
     static func allowlist(concealing concealed: Set<String>, running: Set<String>) -> [String] {
         running.subtracting(concealed).sorted()
