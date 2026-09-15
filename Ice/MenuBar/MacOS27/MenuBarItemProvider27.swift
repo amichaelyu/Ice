@@ -128,6 +128,9 @@ enum MenuBarItemProvider27 {
             else {
                 continue
             }
+            if pid != ownPID, !children.isEmpty {
+                scanSchedule.recordItems(pid: pid)
+            }
             for (index, child) in children.enumerated() {
                 if bundleID == menuBarAgentBundleID, string(child, kAXRoleAttribute) == kAXButtonRole {
                     // The system overflow control ("<<" / ">>").

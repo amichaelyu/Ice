@@ -159,6 +159,23 @@ struct AccessibilityScanSchedule27Tests {
         #expect(schedule.timeout(for: 10, now: 61) == AccessibilityScanSchedule27.normalTimeout)
     }
 
+    @Test("A process that has shown items is never skipped")
+    func itemOwners() {
+        var schedule = AccessibilityScanSchedule27()
+        schedule.recordItems(pid: 10)
+        schedule.record(pid: 10, timedOut: true, now: 0)
+        #expect(schedule.timeout(for: 10, now: 1) == AccessibilityScanSchedule27.normalTimeout)
+    }
+
+    @Test("An exited item owner is forgotten too")
+    func exitedItemOwner() {
+        var schedule = AccessibilityScanSchedule27()
+        schedule.recordItems(pid: 10)
+        schedule.retain(running: [11])
+        schedule.record(pid: 10, timedOut: true, now: 0)
+        #expect(schedule.timeout(for: 10, now: 1) == nil)
+    }
+
     @Test("Exited processes are forgotten, so a reused identifier starts fresh")
     func forgetting() {
         var schedule = AccessibilityScanSchedule27()
