@@ -78,3 +78,29 @@ struct ClockBridgeZone27Tests {
         #expect(!ClockBridgeZone27.shouldBridge(click: CGPoint(x: 1840, y: 15), systemItemFrames: [clock], isConcealing: false))
     }
 }
+
+@Suite("IceIconVisibility27")
+struct IceIconVisibility27Tests {
+    // Measured on macOS 27.0: the external display is primary, the built-in one sits to its left.
+    let screens = [
+        CGRect(x: 0, y: 0, width: 1920, height: 1080),
+        CGRect(x: -1512, y: 0, width: 1512, height: 982),
+    ]
+
+    @Test("An icon overhanging the top of a 30 pt bar is on screen")
+    func overhangingTallerDisplay() {
+        // Ice launched while the external menu bar was active: 33 pt window, top at 1082.
+        #expect(IceIconVisibility27.isOnScreen(iconFrame: CGRect(x: 1394, y: 1049, width: 33, height: 33), screenFrames: screens))
+    }
+
+    @Test("An icon on the shorter display is on screen")
+    func shorterDisplay() {
+        #expect(IceIconVisibility27.isOnScreen(iconFrame: CGRect(x: -526, y: 949, width: 33, height: 33), screenFrames: screens))
+    }
+
+    @Test("An icon moved above the top of its display is not on screen")
+    func aboveTop() {
+        #expect(!IceIconVisibility27.isOnScreen(iconFrame: CGRect(x: 1394, y: 1080, width: 33, height: 33), screenFrames: screens))
+        #expect(!IceIconVisibility27.isOnScreen(iconFrame: CGRect(x: -526, y: 982, width: 33, height: 33), screenFrames: screens))
+    }
+}

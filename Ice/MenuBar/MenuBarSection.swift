@@ -184,6 +184,7 @@ final class MenuBarSection {
                 }
             }
 
+            updateConcealment27()
             return // We're done.
         }
 
@@ -203,6 +204,7 @@ final class MenuBarSection {
         }
 
         startRehideChecks()
+        updateConcealment27()
     }
 
     /// Hides the section.
@@ -224,11 +226,19 @@ final class MenuBarSection {
         }
 
         stopRehideChecks()
+        updateConcealment27()
     }
 
     /// Toggles the visibility of the section.
     func toggle() {
         if isHidden { show() } else { hide() }
+    }
+
+    /// Lets the macOS 27 concealer follow the new state of the sections.
+    private func updateConcealment27() {
+        if #available(macOS 27.0, *) {
+            appState?.concealer27.update()
+        }
     }
 
     /// Starts running checks to determine when to rehide the section.

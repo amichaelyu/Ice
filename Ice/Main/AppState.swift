@@ -49,6 +49,20 @@ final class AppState: ObservableObject {
     /// Manager for user notifications.
     let userNotificationManager = UserNotificationManager()
 
+    /// Storage for ``concealer27``, typed loosely so the property exists on every macOS.
+    private var concealer27Storage: AnyObject?
+
+    /// Hides menu bar items on macOS 27.
+    @available(macOS 27.0, *)
+    var concealer27: Concealer27 {
+        if let concealer = concealer27Storage as? Concealer27 {
+            return concealer
+        }
+        let concealer = Concealer27()
+        concealer27Storage = concealer
+        return concealer
+    }
+
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
@@ -73,6 +87,9 @@ final class AppState: ObservableObject {
         appearanceManager.performSetup(with: self)
         hidEventManager.performSetup(with: self)
         await itemManager.performSetup(with: self)
+        if #available(macOS 27.0, *) {
+            concealer27.performSetup(with: self)
+        }
         imageCache.performSetup(with: self)
         updatesManager.performSetup(with: self)
         userNotificationManager.performSetup(with: self)

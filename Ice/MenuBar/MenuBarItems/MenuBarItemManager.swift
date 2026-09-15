@@ -331,16 +331,6 @@ extension MenuBarItemManager {
 
         itemCache = context.cache
         logger.debug("Updated menu bar item cache")
-        if #available(macOS 27.0, *) {
-            logger.info(
-                """
-                macOS 27 cache: \
-                visible=\(context.cache[.visible].map(\.tag.namespace.description).joined(separator: ","), privacy: .public) \
-                hidden=\(context.cache[.hidden].map(\.tag.namespace.description).joined(separator: ","), privacy: .public) \
-                alwaysHidden=\(context.cache[.alwaysHidden].map(\.tag.namespace.description).joined(separator: ","), privacy: .public)
-                """
-            )
-        }
     }
 
     /// Caches the current menu bar items, regardless of whether the
@@ -377,6 +367,22 @@ extension MenuBarItemManager {
             // stay where macOS placed them.
             if #unavailable(macOS 27.0) {
                 await enforceControlItemOrder(controlItems: controlItems)
+            }
+            if #available(macOS 27.0, *), let appState {
+                // On macOS 27 the saved layout, not the order on the bar, places items in sections.
+                let cache = appState.concealer27.cacheFromSavedLayout(items: items, displayID: displayID)
+                if itemCache != cache {
+                    itemCache = cache
+                    logger.info(
+                        """
+                        macOS 27 cache: \
+                        visible=\(cache[.visible].map(\.tag.namespace.description).joined(separator: ","), privacy: .public) \
+                        hidden=\(cache[.hidden].map(\.tag.namespace.description).joined(separator: ","), privacy: .public) \
+                        alwaysHidden=\(cache[.alwaysHidden].map(\.tag.namespace.description).joined(separator: ","), privacy: .public)
+                        """
+                    )
+                }
+                return
             }
             await uncheckedCacheItems(items: items, controlItems: controlItems, displayID: displayID)
         }

@@ -457,7 +457,7 @@ extension HIDEventManager {
         guard
             let iceIcon = appState.menuBarManager.controlItem(withName: .visible),
             let iceIconFrame = iceIcon.frame,
-            iceIconFrame.maxY <= screen.frame.maxY,
+            isIceIconVerticallyVisible(iceIconFrame, screen: screen),
             let mouseLocation = MouseHelpers.locationAppKit
         else {
             return false
@@ -468,6 +468,20 @@ extension HIDEventManager {
         mouseLocation.x <= screen.frame.maxX &&
         mouseLocation.y <= screen.frame.maxY &&
         mouseLocation.y >= screen.visibleFrame.maxY
+    }
+
+    /// A Boolean value that indicates whether the Ice icon is vertically
+    /// visible, from which Ice infers that the menu bar is not hidden.
+    private func isIceIconVerticallyVisible(_ iceIconFrame: CGRect, screen: NSScreen) -> Bool {
+        if #available(macOS 27.0, *) {
+            // The icon's window overhangs the top of a 30 pt bar and stays on
+            // the display it was created on. See `IceIconVisibility27`.
+            return IceIconVisibility27.isOnScreen(
+                iconFrame: iceIconFrame,
+                screenFrames: NSScreen.screens.map(\.frame)
+            )
+        }
+        return iceIconFrame.maxY <= screen.frame.maxY
     }
 
     /// A Boolean value that indicates whether the mouse pointer is within
