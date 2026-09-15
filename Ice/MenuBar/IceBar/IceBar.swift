@@ -413,9 +413,14 @@ private struct IceBarItemView: View {
             guard let itemManager, let menuBarManager else {
                 return
             }
+            let iceBarDisplayID = menuBarManager.iceBarPanel.screen?.displayID
             menuBarManager.section(withName: section)?.hide()
             Task {
                 try await Task.sleep(for: .milliseconds(25))
+                if #available(macOS 27.0, *), let appState = itemManager.appState {
+                    await ItemClicker27.click(item: item, mouseButton: .left, iceBarDisplayID: iceBarDisplayID, appState: appState)
+                    return
+                }
                 if Bridging.isWindowOnScreen(item.windowID) {
                     try await itemManager.click(item: item, with: .left)
                 } else {
@@ -430,9 +435,14 @@ private struct IceBarItemView: View {
             guard let itemManager, let menuBarManager else {
                 return
             }
+            let iceBarDisplayID = menuBarManager.iceBarPanel.screen?.displayID
             menuBarManager.section(withName: section)?.hide()
             Task {
                 try await Task.sleep(for: .milliseconds(25))
+                if #available(macOS 27.0, *), let appState = itemManager.appState {
+                    await ItemClicker27.click(item: item, mouseButton: .right, iceBarDisplayID: iceBarDisplayID, appState: appState)
+                    return
+                }
                 if Bridging.isWindowOnScreen(item.windowID) {
                     try await itemManager.click(item: item, with: .right)
                 } else {

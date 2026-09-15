@@ -89,3 +89,33 @@ struct PhotoSchedule27Tests {
         #expect(schedule.mayPhotograph(bundleID: "com.caldis.Mos", now: 1))
     }
 }
+
+@Suite("ItemClick27")
+struct ItemClick27Tests {
+    @Test("No activation when the Ice Bar is on the active menu bar's display")
+    func sameDisplay() {
+        #expect(!ItemClick27.needsMenuBarActivation(activeDisplayID: 3, iceBarDisplayID: 3))
+    }
+
+    @Test("Activation when the Ice Bar is on another display")
+    func otherDisplay() {
+        #expect(ItemClick27.needsMenuBarActivation(activeDisplayID: 3, iceBarDisplayID: 1))
+    }
+
+    @Test("No activation without a known Ice Bar display")
+    func unknownDisplay() {
+        #expect(!ItemClick27.needsMenuBarActivation(activeDisplayID: 3, iceBarDisplayID: nil))
+    }
+
+    @Test("A new window of the item's process means its interface is open")
+    func interfaceOpen() {
+        let windows = [(number: 10, ownerPID: Int32(100)), (number: 42, ownerPID: Int32(555))]
+        #expect(ItemClick27.interfaceIsOpen(windowOwners: windows, ownerPID: 555, baseline: [10]))
+    }
+
+    @Test("Windows that were already there, or belong to others, do not count")
+    func interfaceClosed() {
+        let windows = [(number: 10, ownerPID: Int32(555)), (number: 42, ownerPID: Int32(100))]
+        #expect(!ItemClick27.interfaceIsOpen(windowOwners: windows, ownerPID: 555, baseline: [10]))
+    }
+}

@@ -24,6 +24,9 @@ final class HIDEventManager: ObservableObject {
     /// History of the manager's enabled states.
     private var enabledStateStack = [Bool]()
 
+    /// The last empty menu bar spot hovered on each display (see `ItemClicker27`).
+    private var lastEmptyMenuBarPoints = [CGDirectDisplayID: CGPoint]()
+
     /// A Boolean value that indicates whether the manager is enabled.
     private var isEnabled = false {
         didSet {
@@ -46,6 +49,10 @@ final class HIDEventManager: ObservableObject {
         for: [.leftMouseDown, .rightMouseDown]
     ) { [weak self] event in
         guard let self, isEnabled, let appState, let screen = bestScreen(appState: appState) else {
+            return event
+        }
+        // Ice's own click that makes a display's menu bar active (see `ItemClicker27`).
+        if event.cgEvent?.getIntegerValueField(.eventSourceUserData) == HIDEventManager.menuBarActivationMarker {
             return event
         }
         switch event.type {
@@ -357,6 +364,14 @@ extension HIDEventManager {
     /// Marks the clicks Ice replays, so the tap lets them through.
     private static let replayedClickMarker: Int64 = 0x1CE_27_C1C
 
+    /// Marks Ice's click that makes a display's menu bar active before an item is pressed.
+    static let menuBarActivationMarker: Int64 = 0x1CE_27_BA2
+
+    /// The last empty menu bar spot hovered on the given display.
+    func lastEmptyMenuBarPoint(for displayID: CGDirectDisplayID) -> CGPoint? {
+        lastEmptyMenuBarPoints[displayID]
+    }
+
     @available(macOS 27.0, *)
     private func handleSystemItemClick27(_ event: CGEvent, appState: AppState) -> CGEvent? {
         guard event.getIntegerValueField(.eventSourceUserData) != Self.replayedClickMarker else {
@@ -416,6 +431,9 @@ extension HIDEventManager {
         if hiddenSection.isHidden {
             guard isMouseInsideEmptyMenuBarSpace(appState: appState, screen: screen) else {
                 return
+            }
+            if let location = MouseHelpers.locationCoreGraphics {
+                lastEmptyMenuBarPoints[screen.displayID] = location
             }
             Task {
                 try await Task.sleep(for: .seconds(delay))

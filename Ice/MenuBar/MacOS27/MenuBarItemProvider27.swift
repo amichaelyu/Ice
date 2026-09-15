@@ -80,6 +80,12 @@ enum MenuBarItemProvider27 {
         lock.withLock { lastOverflowButtonFrame }
     }
 
+    /// The Accessibility element of the item with the given synthetic identifier, from the
+    /// last read. Items drawn on another display are included (see `ItemDrawing27`).
+    static func element(forWindowID windowID: CGWindowID) -> AXUIElement? {
+        lock.withLock { entries[windowID]?.element }
+    }
+
     // MARK: Reading
 
     private static func readItems(retryIfMenuBarMoves: Bool = true) -> [MenuBarItem] {
