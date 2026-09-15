@@ -305,6 +305,27 @@ final class MenuBarItemImageCache: ObservableObject {
             return
         }
 
+        if #available(macOS 27.0, *) {
+            // There are no item windows to capture on macOS 27. See `ItemImageStore27`.
+            var items = [MenuBarItem]()
+            for section in sections {
+                items += await appState.itemManager.itemCache.managedItems(for: section)
+            }
+            let store = await appState.itemImageStore27
+            await store.captureActiveMenuBar(appState: appState)
+            await store.photographMissing(items: items, appState: appState)
+            var newImages = [MenuBarItemTag: CapturedImage]()
+            for item in items {
+                if let image = await store.image(for: item) {
+                    newImages[item.tag] = image
+                }
+            }
+            await MainActor.run { [newImages] in
+                images.merge(newImages) { (_, new) in new }
+            }
+            return
+        }
+
         guard
             let displayID = await appState.itemManager.itemCache.displayID,
             let screen = NSScreen.screens.first(where: { $0.displayID == displayID })

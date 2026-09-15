@@ -63,6 +63,20 @@ final class AppState: ObservableObject {
         return concealer
     }
 
+    /// Storage for ``itemImageStore27``, typed loosely so the property exists on every macOS.
+    private var itemImageStore27Storage: AnyObject?
+
+    /// Images of menu bar items on macOS 27.
+    @available(macOS 27.0, *)
+    var itemImageStore27: ItemImageStore27 {
+        if let store = itemImageStore27Storage as? ItemImageStore27 {
+            return store
+        }
+        let store = ItemImageStore27()
+        itemImageStore27Storage = store
+        return store
+    }
+
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 

@@ -142,10 +142,9 @@ enum MenuBarItemProvider27 {
                 let element = bundleID == menuBarAgentBundleID
                     ? (elements(child, kAXChildrenAttribute)?.first ?? child)
                     : child
-                guard
-                    let frame = frame(of: element),
-                    activeDisplayBounds.map({ $0.intersects(frame) }) ?? true
-                else {
+                // Items whose frames are on another display stay in the list, marked as not
+                // drawn, so a concealed item keeps its section (see `ItemDrawing27`).
+                guard let frame = frame(of: element) else {
                     continue
                 }
                 rawItems.append(RawItem(
@@ -159,7 +158,9 @@ enum MenuBarItemProvider27 {
                 ))
             }
             if bundleID == menuBarAgentBundleID {
-                let systemFrames = rawItems.filter { $0.bundleID == menuBarAgentBundleID }.map(\.frame)
+                let systemFrames = rawItems
+                    .filter { $0.bundleID == menuBarAgentBundleID && (activeDisplayBounds?.intersects($0.frame) ?? true) }
+                    .map(\.frame)
                 lock.withLock {
                     lastSystemItemFrames = systemFrames
                     lastOverflowButtonFrame = chevronFrame
@@ -184,13 +185,15 @@ enum MenuBarItemProvider27 {
                 ownerPID: raw.pid,
                 bounds: raw.frame,
                 title: raw.title,
-                isOnScreen: !OverflowDetection27.isInOverflow(itemFrame: raw.frame, chevronFrame: chevronFrame)
+                isOnScreen: ItemDrawing27.isDrawn(itemFrame: raw.frame, activeDisplayBounds: activeDisplayBounds, chevronFrame: chevronFrame)
             ))
         }
         lock.withLock {
             entries = newEntries
             lastOverflowButtonFrame = chevronFrame
-            lastSystemItemFrames = newEntries.values.filter { $0.bundleID == menuBarAgentBundleID }.map(\.frame)
+            lastSystemItemFrames = newEntries.values
+                .filter { $0.bundleID == menuBarAgentBundleID && (activeDisplayBounds?.intersects($0.frame) ?? true) }
+                .map(\.frame)
         }
         return items
     }

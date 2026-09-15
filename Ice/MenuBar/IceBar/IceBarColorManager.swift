@@ -161,4 +161,10 @@ final class IceBarColorManager: ObservableObject {
         updateWindowImage(for: screen)
         updateColorInfo(with: frame, screen: screen)
     }
+
+    /// Sets the colour from Ice's own capture on macOS 27, where the menu bar window
+    /// cannot be captured.
+    func setColor27(_ color: CGColor) {
+        colorInfo = MenuBarAverageColorInfo(color: color, source: .menuBarWindow)
+    }
 }

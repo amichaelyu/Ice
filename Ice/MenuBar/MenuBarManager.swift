@@ -238,6 +238,14 @@ final class MenuBarManager: ObservableObject {
             return
         }
 
+        if #available(macOS 27.0, *), let appState, let color = appState.itemImageStore27.barColor {
+            let info = MenuBarAverageColorInfo(color: color, source: .menuBarWindow)
+            if averageColorInfo != info {
+                averageColorInfo = info
+            }
+            return
+        }
+
         let windows = WindowInfo.createWindows(option: .onScreen)
         let displayID = screen.displayID
 
