@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# Verifies plan 1 on macOS 27: Ice hides the hidden and always-hidden sections,
-# reveals the hidden section on hover without exposing always-hidden items, and
+# Verifies plan 1 on macOS 27: Ice hides the hidden and always-hidden sections soon
+# after launch, reveals the hidden section on hover without exposing always-hidden items, and
 # every item comes back when Ice quits.
 #
 # Requirements: Ice installed with Scripts/install.sh, Thaw not running, the
@@ -28,7 +28,12 @@ quit_ice() {
     osascript -e 'tell application id "com.jordanbaird.Ice" to quit' >/dev/null 2>&1 || true
     for _ in $(seq 1 40); do pgrep -x Ice >/dev/null || return 0; sleep 0.25; done
 }
+# The bar draws its items dimmer while it is inactive, which moves the measured edge by a
+# few points, so steady captures are taken with the starting application frontmost.
+FRONT_APP=$(osascript -e 'tell application "System Events" to get name of first process whose frontmost is true')
 leftmost() {
+    osascript -e "tell application \"$FRONT_APP\" to activate" >/dev/null 2>&1 || true
+    sleep 0.5
     screencapture -x -R "$REGION" "$WORK/steady/$1.png"
     "$WORK/bin/analyze-frames" "$WORK/steady" "$REGION_X" "$REGION_W" | awk -v name="$1" '$1 == name { print $2 }'
 }
@@ -51,7 +56,9 @@ ALL_VISIBLE=$(leftmost all-visible)
 defaults write com.jordanbaird.Ice UseIceBar -bool false
 defaults write com.jordanbaird.Ice ShowOnHover -bool true
 open "$HOME/Applications/Ice.app"
-sleep 10
+sleep 3
+EARLY=$(leftmost early)
+sleep 7
 HIDDEN=$(leftmost hidden)
 
 "$WORK/bin/pointer" glide "$EMPTY_X" "$EMPTY_Y"
@@ -77,9 +84,10 @@ quit_ice
 sleep 2
 AFTER_QUIT=$(leftmost after-quit)
 
-echo "all-visible=$ALL_VISIBLE hidden=$HIDDEN revealed=$REVEALED lowest-during-cycles=$LOWEST frames=$FRAMES after-quit=$AFTER_QUIT"
+echo "all-visible=$ALL_VISIBLE early=$EARLY hidden=$HIDDEN revealed=$REVEALED lowest-during-cycles=$LOWEST frames=$FRAMES after-quit=$AFTER_QUIT"
 FAILED=0
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; FAILED=1; fi; }
+check "items are hidden within 3 s of launch" "[ $EARLY -gt $((ALL_VISIBLE + 20)) ]"
 check "items are hidden" "[ $HIDDEN -gt $((ALL_VISIBLE + 20)) ]"
 check "hover reveals the hidden section" "[ $REVEALED -lt $((HIDDEN - 20)) ]"
 check "always-hidden items stay hidden while revealed" "[ $REVEALED -gt $((ALL_VISIBLE + 20)) ]"

@@ -105,16 +105,42 @@ final class HIDEventManager: ObservableObject {
         return event
     }
 
+    /// Tap that lets clicks reach the system items while items are concealed on macOS 27.
+    ///
+    /// While an assessment-mode assertion is live, MenuBarAgent ignores clicks on the
+    /// clock (measured on macOS 27.0). The tap holds such a click back, releases the
+    /// assertions for a moment, and replays the click.
+    private(set) lazy var systemItemClickTap = EventTap(
+        type: .leftMouseDown,
+        location: .hidEventTap,
+        placement: .headInsertEventTap,
+        option: .defaultTap
+    ) { [weak self] _, event in
+        guard let self, isEnabled, let appState else {
+            return event
+        }
+        if #available(macOS 27.0, *) {
+            return handleSystemItemClick27(event, appState: appState)
+        }
+        return event
+    }
+
     // MARK: All Monitors
 
     /// All monitors maintained by the manager.
-    private lazy var allMonitors: [any EventMonitorProtocol] = [
-        mouseDownMonitor,
-        mouseUpMonitor,
-        mouseDraggedMonitor,
-        mouseMovedTap,
-        scrollWheelMonitor,
-    ]
+    private lazy var allMonitors: [any EventMonitorProtocol] = {
+        var monitors: [any EventMonitorProtocol] = [
+            mouseDownMonitor,
+            mouseUpMonitor,
+            mouseDraggedMonitor,
+            mouseMovedTap,
+            scrollWheelMonitor,
+        ]
+        if #available(macOS 27.0, *) {
+            monitors.append(systemItemClickTap)
+        }
+        return monitors
+    }()
 
     // MARK: Setup
 
@@ -326,6 +352,49 @@ extension HIDEventManager {
         }
     }
 
+    // MARK: Handle System Item Clicks (macOS 27)
+
+    /// Marks the clicks Ice replays, so the tap lets them through.
+    private static let replayedClickMarker: Int64 = 0x1CE_27_C1C
+
+    @available(macOS 27.0, *)
+    private func handleSystemItemClick27(_ event: CGEvent, appState: AppState) -> CGEvent? {
+        guard event.getIntegerValueField(.eventSourceUserData) != Self.replayedClickMarker else {
+            return event
+        }
+        let concealer = appState.concealer27
+        guard ClockBridgeZone27.shouldBridge(
+            click: event.location,
+            systemItemFrames: MenuBarItemProvider27.systemItemFrames(),
+            isConcealing: concealer.isConcealing
+        ) else {
+            return event
+        }
+        concealer.suspend(for: .milliseconds(1500))
+        let location = event.location
+        Task {
+            try? await Task.sleep(for: .milliseconds(150))
+            Self.replayClick(at: location)
+        }
+        return nil
+    }
+
+    private static func replayClick(at location: CGPoint) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+            guard let event = CGEvent(
+                mouseEventSource: source,
+                mouseType: type,
+                mouseCursorPosition: location,
+                mouseButton: .left
+            ) else {
+                continue
+            }
+            event.setIntegerValueField(.eventSourceUserData, value: replayedClickMarker)
+            event.post(tap: .cghidEventTap)
+        }
+    }
+
     // MARK: Handle Show On Hover
 
     private func handleShowOnHover(appState: AppState, screen: NSScreen) {
@@ -452,15 +521,24 @@ extension HIDEventManager {
     /// A Boolean value that indicates whether the mouse pointer is within
     /// the bounds of the menu bar.
     func isMouseInsideMenuBar(appState: AppState, screen: NSScreen) -> Bool {
+        guard let mouseLocation = MouseHelpers.locationAppKit else {
+            return false
+        }
+
         // Ice icon must be vertically visible. Otherwise, we can infer
         // that the menu bar is hidden and the mouse is not inside.
-        guard
-            let iceIcon = appState.menuBarManager.controlItem(withName: .visible),
-            let iceIconFrame = iceIcon.frame,
-            isIceIconVerticallyVisible(iceIconFrame, screen: screen),
-            let mouseLocation = MouseHelpers.locationAppKit
-        else {
-            return false
+        //
+        // On macOS 27 the icon's window is only a placeholder, and its frame says
+        // nothing about the menu bar (measured past a display's left edge, below its
+        // bottom, and with no height). The visible frame check below remains.
+        if #unavailable(macOS 27.0) {
+            guard
+                let iceIcon = appState.menuBarManager.controlItem(withName: .visible),
+                let iceIconFrame = iceIcon.frame,
+                iceIconFrame.maxY <= screen.frame.maxY
+            else {
+                return false
+            }
         }
 
         // Infer the menu bar frame from the screen frame.
@@ -468,20 +546,6 @@ extension HIDEventManager {
         mouseLocation.x <= screen.frame.maxX &&
         mouseLocation.y <= screen.frame.maxY &&
         mouseLocation.y >= screen.visibleFrame.maxY
-    }
-
-    /// A Boolean value that indicates whether the Ice icon is vertically
-    /// visible, from which Ice infers that the menu bar is not hidden.
-    private func isIceIconVerticallyVisible(_ iceIconFrame: CGRect, screen: NSScreen) -> Bool {
-        if #available(macOS 27.0, *) {
-            // The icon's window overhangs the top of a 30 pt bar and stays on
-            // the display it was created on. See `IceIconVisibility27`.
-            return IceIconVisibility27.isOnScreen(
-                iconFrame: iceIconFrame,
-                screenFrames: NSScreen.screens.map(\.frame)
-            )
-        }
-        return iceIconFrame.maxY <= screen.frame.maxY
     }
 
     /// A Boolean value that indicates whether the mouse pointer is within
@@ -503,6 +567,20 @@ extension HIDEventManager {
     func isMouseInsideMenuBarItem(appState: AppState, screen: NSScreen) -> Bool {
         guard let mouseLocation = MouseHelpers.locationCoreGraphics else {
             return false
+        }
+        if #available(macOS 27.0, *) {
+            // There are no item windows on macOS 27. See `ItemHitTest27`.
+            let items = appState.itemManager.itemCache.managedItems.map { item in
+                ItemHitTest27.Item(frame: item.bounds, ownerPID: item.ownerPID, isOnScreen: item.isOnScreen)
+            }
+            let systemFrames = MenuBarItemProvider27.systemItemFrames()
+                + [MenuBarItemProvider27.overflowButtonFrame()].compactMap { $0 }
+            return ItemHitTest27.isInsideItem(
+                point: mouseLocation,
+                items: items,
+                concealedPIDs: appState.concealer27.concealedPIDs,
+                systemFrames: systemFrames
+            )
         }
         let windowIDs = Bridging.getMenuBarWindowList(option: [.onScreen, .activeSpace, .itemsOnly])
         return windowIDs.contains { windowID in

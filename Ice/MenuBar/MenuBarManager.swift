@@ -154,6 +154,13 @@ final class MenuBarManager: ObservableObject {
                     return
                 }
 
+                // macOS 27 folds the items that do not fit behind its own overflow button,
+                // so shown items never cover the application menus. Activating Ice there only
+                // took keyboard focus from the frontmost application (measured).
+                if #available(macOS 27.0, *) {
+                    return
+                }
+
                 // Don't continue if:
                 //   * The "HideApplicationMenus" setting isn't enabled.
                 //   * Using the Ice Bar.

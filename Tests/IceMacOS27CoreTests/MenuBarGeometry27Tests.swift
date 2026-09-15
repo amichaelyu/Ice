@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import Testing
 @testable import IceMacOS27Core
 
@@ -79,28 +80,90 @@ struct ClockBridgeZone27Tests {
     }
 }
 
-@Suite("IceIconVisibility27")
-struct IceIconVisibility27Tests {
-    // Measured on macOS 27.0: the external display is primary, the built-in one sits to its left.
-    let screens = [
-        CGRect(x: 0, y: 0, width: 1920, height: 1080),
-        CGRect(x: -1512, y: 0, width: 1512, height: 982),
-    ]
+@Suite("ItemHitTest27")
+struct ItemHitTest27Tests {
+    // Measured on macOS 27.0 with the external menu bar active.
+    let stats = ItemHitTest27.Item(frame: CGRect(x: 1478, y: 2, width: 33, height: 24), ownerPID: 100, isOnScreen: true)
+    let clock = CGRect(x: 1787, y: 0, width: 113, height: 30)
+    // Built-in display: an item folded behind the overflow button, and the button itself.
+    let folded = ItemHitTest27.Item(frame: CGRect(x: -649, y: 102, width: 47, height: 24), ownerPID: 200, isOnScreen: false)
+    let overflowButton = CGRect(x: -619.5, y: 99, width: 17.5, height: 30)
 
-    @Test("An icon overhanging the top of a 30 pt bar is on screen")
-    func overhangingTallerDisplay() {
-        // Ice launched while the external menu bar was active: 33 pt window, top at 1082.
-        #expect(IceIconVisibility27.isOnScreen(iconFrame: CGRect(x: 1394, y: 1049, width: 33, height: 33), screenFrames: screens))
+    @Test("The pointer on a drawn item is inside an item")
+    func drawnItem() {
+        #expect(ItemHitTest27.isInsideItem(point: CGPoint(x: 1497, y: 14), items: [stats], concealedPIDs: [], systemFrames: [clock]))
     }
 
-    @Test("An icon on the shorter display is on screen")
-    func shorterDisplay() {
-        #expect(IceIconVisibility27.isOnScreen(iconFrame: CGRect(x: -526, y: 949, width: 33, height: 33), screenFrames: screens))
+    @Test("An empty spot is not inside an item")
+    func emptySpot() {
+        #expect(!ItemHitTest27.isInsideItem(point: CGPoint(x: 900, y: 12), items: [stats], concealedPIDs: [], systemFrames: [clock]))
     }
 
-    @Test("An icon moved above the top of its display is not on screen")
-    func aboveTop() {
-        #expect(!IceIconVisibility27.isOnScreen(iconFrame: CGRect(x: 1394, y: 1080, width: 33, height: 33), screenFrames: screens))
-        #expect(!IceIconVisibility27.isOnScreen(iconFrame: CGRect(x: -526, y: 982, width: 33, height: 33), screenFrames: screens))
+    @Test("A concealed item's stale frame does not count")
+    func concealed() {
+        #expect(!ItemHitTest27.isInsideItem(point: CGPoint(x: 1497, y: 14), items: [stats], concealedPIDs: [100], systemFrames: []))
+    }
+
+    @Test("A folded item does not count, but the overflow button does")
+    func overflow() {
+        #expect(!ItemHitTest27.isInsideItem(point: CGPoint(x: -640, y: 114), items: [folded], concealedPIDs: [], systemFrames: []))
+        #expect(ItemHitTest27.isInsideItem(point: CGPoint(x: -611, y: 114), items: [folded], concealedPIDs: [], systemFrames: [overflowButton]))
+    }
+
+    @Test("System items count on either display")
+    func systemItems() {
+        #expect(ItemHitTest27.isInsideItem(point: CGPoint(x: 1843, y: 12), items: [], concealedPIDs: [], systemFrames: [clock]))
+    }
+}
+
+@Suite("AccessibilityScanSchedule27")
+struct AccessibilityScanSchedule27Tests {
+    @Test("A process is asked with the normal timeout")
+    func normal() {
+        let schedule = AccessibilityScanSchedule27()
+        #expect(schedule.timeout(for: 10, now: 0) == AccessibilityScanSchedule27.normalTimeout)
+    }
+
+    @Test("A process that timed out is skipped for a minute, then retried briefly")
+    func backoff() {
+        var schedule = AccessibilityScanSchedule27()
+        schedule.record(pid: 10, timedOut: true, now: 0)
+        #expect(schedule.timeout(for: 10, now: 1) == nil)
+        #expect(schedule.timeout(for: 10, now: 59) == nil)
+        #expect(schedule.timeout(for: 10, now: 60) == AccessibilityScanSchedule27.retryTimeout)
+        schedule.record(pid: 10, timedOut: true, now: 60)
+        #expect(schedule.timeout(for: 10, now: 179) == nil)
+        #expect(schedule.timeout(for: 10, now: 180) == AccessibilityScanSchedule27.retryTimeout)
+    }
+
+    @Test("The pause stops growing at ten minutes")
+    func cap() {
+        var schedule = AccessibilityScanSchedule27()
+        var now: TimeInterval = 0
+        for _ in 0..<8 {
+            schedule.record(pid: 10, timedOut: true, now: now)
+            while schedule.timeout(for: 10, now: now) == nil {
+                now += 1
+            }
+        }
+        schedule.record(pid: 10, timedOut: true, now: now)
+        #expect(schedule.timeout(for: 10, now: now + 599) == nil)
+        #expect(schedule.timeout(for: 10, now: now + 600) == AccessibilityScanSchedule27.retryTimeout)
+    }
+
+    @Test("A process that answers is asked normally again")
+    func recovery() {
+        var schedule = AccessibilityScanSchedule27()
+        schedule.record(pid: 10, timedOut: true, now: 0)
+        schedule.record(pid: 10, timedOut: false, now: 60)
+        #expect(schedule.timeout(for: 10, now: 61) == AccessibilityScanSchedule27.normalTimeout)
+    }
+
+    @Test("Exited processes are forgotten, so a reused identifier starts fresh")
+    func forgetting() {
+        var schedule = AccessibilityScanSchedule27()
+        schedule.record(pid: 10, timedOut: true, now: 0)
+        schedule.retain(running: [11])
+        #expect(schedule.timeout(for: 10, now: 1) == AccessibilityScanSchedule27.normalTimeout)
     }
 }

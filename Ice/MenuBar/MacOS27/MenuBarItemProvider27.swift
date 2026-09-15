@@ -42,6 +42,10 @@ enum MenuBarItemProvider27 {
 
     private static let lock = NSLock()
     nonisolated(unsafe) private static var entries = [CGWindowID: Entry]()
+    nonisolated(unsafe) private static var lastOverflowButtonFrame: CGRect?
+    nonisolated(unsafe) private static var lastSystemItemFrames = [CGRect]()
+    /// Only read and written on `queue`.
+    nonisolated(unsafe) private static var scanSchedule = AccessibilityScanSchedule27()
 
     /// Returns the items on the active menu bar, ordered left to right.
     static func items() async -> [MenuBarItem] {
@@ -68,30 +72,59 @@ enum MenuBarItemProvider27 {
 
     /// Frames of the system items hosted by MenuBarAgent, from the last read.
     static func systemItemFrames() -> [CGRect] {
-        lock.withLock {
-            entries.values.filter { $0.bundleID == menuBarAgentBundleID }.map(\.frame)
-        }
+        lock.withLock { lastSystemItemFrames }
+    }
+
+    /// Frame of the system overflow button ("<<" / ">>"), from the last read.
+    static func overflowButtonFrame() -> CGRect? {
+        lock.withLock { lastOverflowButtonFrame }
     }
 
     // MARK: Reading
 
-    private static func readItems() -> [MenuBarItem] {
+    private static func readItems(retryIfMenuBarMoves: Bool = true) -> [MenuBarItem] {
         let ownPID = ProcessInfo.processInfo.processIdentifier
         var rawItems = [RawItem]()
         var chevronFrame: CGRect?
-        // A read that races a change of the active menu bar can mix displays.
-        let activeDisplayBounds = Bridging.getActiveMenuBarDisplayID().map(CGDisplayBounds)
+        // A read that races a change of the active menu bar can mix displays, so it
+        // is repeated once when the menu bar moves during the read.
+        let activeDisplayID = Bridging.getActiveMenuBarDisplayID()
+        let activeDisplayBounds = activeDisplayID.map(CGDisplayBounds)
 
-        for app in NSWorkspace.shared.runningApplications {
+        // MenuBarAgent comes first, and its frames are published before the other
+        // processes are asked: a click on the clock needs them, and right after launch
+        // the whole read can take seconds (measured 12.7 s).
+        let runningApplications = NSWorkspace.shared.runningApplications
+        let applications = runningApplications.filter { $0.bundleIdentifier == menuBarAgentBundleID }
+            + runningApplications.filter { $0.bundleIdentifier != menuBarAgentBundleID }
+        let now = ProcessInfo.processInfo.systemUptime
+        scanSchedule.retain(running: Set(applications.map(\.processIdentifier)))
+
+        for app in applications {
             guard let bundleID = app.bundleIdentifier else {
                 continue
             }
             let pid = app.processIdentifier
+            let timeout: Float
+            if pid == ownPID {
+                timeout = 0.25
+            } else if let scheduled = scanSchedule.timeout(for: pid, now: now) {
+                timeout = scheduled
+            } else {
+                continue
+            }
             let application = AXUIElementCreateApplication(pid)
-            AXUIElementSetMessagingTimeout(application, pid == ownPID ? 0.25 : 0.5)
+            AXUIElementSetMessagingTimeout(application, timeout)
+            var barValue: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(application, kAXExtrasMenuBarAttribute as CFString, &barValue)
+            if pid != ownPID {
+                scanSchedule.record(pid: pid, timedOut: result == .cannotComplete, now: now)
+            }
             guard
-                let bar = element(application, kAXExtrasMenuBarAttribute),
-                let children = elements(bar, kAXChildrenAttribute)
+                result == .success,
+                let barValue,
+                CFGetTypeID(barValue) == AXUIElementGetTypeID(),
+                let children = elements(barValue as! AXUIElement, kAXChildrenAttribute) // swiftlint:disable:this force_cast
             else {
                 continue
             }
@@ -122,8 +155,18 @@ enum MenuBarItemProvider27 {
                     frame: frame
                 ))
             }
+            if bundleID == menuBarAgentBundleID {
+                let systemFrames = rawItems.filter { $0.bundleID == menuBarAgentBundleID }.map(\.frame)
+                lock.withLock {
+                    lastSystemItemFrames = systemFrames
+                    lastOverflowButtonFrame = chevronFrame
+                }
+            }
         }
 
+        if retryIfMenuBarMoves, Bridging.getActiveMenuBarDisplayID() != activeDisplayID {
+            return readItems(retryIfMenuBarMoves: false)
+        }
         var newEntries = [CGWindowID: Entry]()
         var items = [MenuBarItem]()
         for raw in rawItems.sorted(by: { $0.frame.minX < $1.frame.minX }) {
@@ -143,6 +186,8 @@ enum MenuBarItemProvider27 {
         }
         lock.withLock {
             entries = newEntries
+            lastOverflowButtonFrame = chevronFrame
+            lastSystemItemFrames = newEntries.values.filter { $0.bundleID == menuBarAgentBundleID }.map(\.frame)
         }
         return items
     }

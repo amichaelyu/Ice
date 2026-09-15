@@ -77,6 +77,24 @@ final class MenuBarItemManager: ObservableObject {
             }
             .store(in: &c)
 
+        if #available(macOS 27.0, *) {
+            // Accessibility reports frames only for the active menu bar, so read the
+            // items again soon after it moves to another display.
+            NSWorkspace.shared.notificationCenter
+                .publisher(for: NSWorkspace.didActivateApplicationNotification)
+                // The menu bar takes about a second to move (measured).
+                .debounce(for: 1.5, scheduler: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    guard let self else {
+                        return
+                    }
+                    Task {
+                        await self.cacheItemsIfNeeded()
+                    }
+                }
+                .store(in: &c)
+        }
+
         cancellables = c
     }
 
@@ -356,20 +374,10 @@ extension MenuBarItemManager {
             let itemWindowIDs = currentItemWindowIDs ?? items.reversed().map { $0.windowID }
             await cacheActor.updateCachedItemWindowIDs(itemWindowIDs)
 
-            guard let controlItems = ControlItemPair(items: &items) else {
-                // ???: Is clearing the cache the best thing to do here?
-                logger.warning("Missing control item for hidden section, clearing menu bar item cache")
-                itemCache = ItemCache(displayID: nil)
-                return
-            }
-
-            // Moving items is not supported on macOS 27 yet (plan 2), so the dividers
-            // stay where macOS placed them.
-            if #unavailable(macOS 27.0) {
-                await enforceControlItemOrder(controlItems: controlItems)
-            }
             if #available(macOS 27.0, *), let appState {
-                // On macOS 27 the saved layout, not the order on the bar, places items in sections.
+                // On macOS 27 the saved layout, not the order on the bar, places items in sections,
+                // so Ice's dividers are not needed. Accessibility reports them only on the display
+                // Ice launched on, and requiring them emptied the cache on the other display.
                 let cache = appState.concealer27.cacheFromSavedLayout(items: items, displayID: displayID)
                 if itemCache != cache {
                     itemCache = cache
@@ -383,6 +391,19 @@ extension MenuBarItemManager {
                     )
                 }
                 return
+            }
+
+            guard let controlItems = ControlItemPair(items: &items) else {
+                // ???: Is clearing the cache the best thing to do here?
+                logger.warning("Missing control item for hidden section, clearing menu bar item cache")
+                itemCache = ItemCache(displayID: nil)
+                return
+            }
+
+            // Moving items is not supported on macOS 27 yet (plan 2), so the dividers
+            // stay where macOS placed them.
+            if #unavailable(macOS 27.0) {
+                await enforceControlItemOrder(controlItems: controlItems)
             }
             await uncheckedCacheItems(items: items, controlItems: controlItems, displayID: displayID)
         }

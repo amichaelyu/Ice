@@ -82,13 +82,22 @@ final class Concealer27 {
             return application.processIdentifier
         })
         let previous = applyTask
-        applyTask = Task { [controller, logger] in
+        let task = Task { [controller, logger] in
             await previous?.value
             do {
                 try await controller.apply(target: target, running: running)
             } catch {
                 logger.error("Could not apply concealment: \(error, privacy: .public)")
             }
+        }
+        applyTask = task
+        // Concealing moves the remaining items, and hover hit-testing uses their cached
+        // frames. The refresh stays out of `applyTask`, so a slow read never holds up the
+        // next change. The bar animates for about 250 ms (measured).
+        Task { [weak self] in
+            await task.value
+            try? await Task.sleep(for: .milliseconds(400))
+            await self?.appState?.itemManager.cacheItemsIfNeeded()
         }
     }
 

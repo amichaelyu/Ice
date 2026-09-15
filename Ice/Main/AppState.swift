@@ -86,10 +86,12 @@ final class AppState: ObservableObject {
 
         appearanceManager.performSetup(with: self)
         hidEventManager.performSetup(with: self)
-        await itemManager.performSetup(with: self)
         if #available(macOS 27.0, *) {
+            // Hiding does not need the item cache, and the first read of the items can
+            // take seconds (measured 9 s), so it starts before the item manager's setup.
             concealer27.performSetup(with: self)
         }
+        await itemManager.performSetup(with: self)
         imageCache.performSetup(with: self)
         updatesManager.performSetup(with: self)
         userNotificationManager.performSetup(with: self)
