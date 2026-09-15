@@ -29,20 +29,27 @@ struct SyntheticWindowID27Tests {
 
 @Suite("OverflowDetection27")
 struct OverflowDetection27Tests {
-    let chevron = CGRect(x: -644, y: 102.5, width: 24, height: 24)
+    // Measured on macOS 27.0, built-in display: the overflow button sits at x −619…−602.
+    let button = CGRect(x: -619, y: 99, width: 17, height: 30)
 
-    @Test("An item reporting the chevron's position is in the overflow")
+    @Test("Folded items overlap the overflow button")
     func folded() {
-        #expect(OverflowDetection27.isInOverflow(itemFrame: CGRect(x: -644, y: 102.5, width: 42, height: 24), chevronFrame: chevron))
+        #expect(OverflowDetection27.isInOverflow(itemFrame: CGRect(x: -649, y: 102, width: 47, height: 24), chevronFrame: button))
+        #expect(OverflowDetection27.isInOverflow(itemFrame: CGRect(x: -634, y: 102, width: 24, height: 24), chevronFrame: button))
     }
 
-    @Test("An item elsewhere on the bar is not in the overflow")
-    func drawn() {
-        #expect(!OverflowDetection27.isInOverflow(itemFrame: CGRect(x: -585, y: 102.5, width: 24, height: 24), chevronFrame: chevron))
+    @Test("A drawn item next to the button is not folded")
+    func drawnNextToButton() {
+        #expect(!OverflowDetection27.isInOverflow(itemFrame: CGRect(x: -588, y: 102, width: 24, height: 24), chevronFrame: button))
     }
 
-    @Test("Without a chevron nothing is in the overflow")
-    func noChevron() {
+    @Test("Items shown left of the notch while expanded are not folded")
+    func expanded() {
+        #expect(!OverflowDetection27.isInOverflow(itemFrame: CGRect(x: -904, y: 102, width: 36, height: 24), chevronFrame: button))
+    }
+
+    @Test("Without an overflow button nothing is folded")
+    func noButton() {
         #expect(!OverflowDetection27.isInOverflow(itemFrame: CGRect(x: 0, y: 0, width: 24, height: 24), chevronFrame: nil))
     }
 }
