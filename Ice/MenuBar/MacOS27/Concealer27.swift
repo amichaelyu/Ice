@@ -4,6 +4,7 @@
 //
 
 import Cocoa
+import Combine
 import OSLog
 
 /// Hides menu bar items on macOS 27, where Ice's expanding dividers no longer work.
@@ -25,6 +26,7 @@ final class Concealer27 {
 
     /// Applications shown for a moment, with the number of callers showing each.
     private var temporarilyShown = [String: Int]()
+    private var cancellables = Set<AnyCancellable>()
 
     /// Whether any application is meant to be concealed right now.
     private(set) var isConcealing = false
@@ -61,6 +63,17 @@ final class Concealer27 {
                 self?.controller.releaseAll()
             }
         })
+        let navigation = appState.navigationState
+        navigation.$isSettingsPresented
+            .combineLatest(navigation.$settingsNavigationIdentifier)
+            .removeDuplicates { $0.0 == $1.0 && $0.1 == $1.1 }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.update()
+                }
+            }
+            .store(in: &cancellables)
         update()
     }
 
@@ -141,6 +154,16 @@ final class Concealer27 {
         update()
     }
 
+    /// Moves an application to a section of the saved layout and applies it.
+    func setSection(_ section: MacOS27Section, for bundleID: String) {
+        let updated = SectionLayout27.settingSection(section, for: bundleID, in: savedLayout)
+        Defaults.set(updated.mapValues(\.rawValue), forKey: .macOS27Layout)
+        update()
+        Task { [weak self] in
+            await self?.appState?.itemManager.cacheItemsRegardless()
+        }
+    }
+
     /// Builds the item cache from the saved layout rather than the order on the bar.
     func cacheFromSavedLayout(items: [MenuBarItem], displayID: CGDirectDisplayID?) -> MenuBarItemManager.ItemCache {
         var cache = MenuBarItemManager.ItemCache(displayID: displayID)
@@ -164,6 +187,11 @@ final class Concealer27 {
     // MARK: Private
 
     private func revealState(_ appState: AppState) -> RevealState27 {
+        let navigation = appState.navigationState
+        if navigation.isSettingsPresented, navigation.settingsNavigationIdentifier == .menuBarLayout {
+            // Everything is drawn while the layout window is open, so every item can be photographed.
+            return .allRevealed
+        }
         if appState.settings.general.useIceBar {
             // The Ice Bar shows hidden items in its own panel, so the bar stays concealed.
             return .allHidden
@@ -176,5 +204,15 @@ final class Concealer27 {
             return .hiddenRevealed
         }
         return .allHidden
+    }
+}
+
+extension MacOS27Section {
+    init(_ name: MenuBarSection.Name) {
+        switch name {
+        case .visible: self = .visible
+        case .hidden: self = .hidden
+        case .alwaysHidden: self = .alwaysHidden
+        }
     }
 }

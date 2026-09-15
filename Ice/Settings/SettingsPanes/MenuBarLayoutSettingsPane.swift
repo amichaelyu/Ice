@@ -32,9 +32,15 @@ struct MenuBarLayoutSettingsPane: View {
             VStack(spacing: 3) {
                 Text("Drag to arrange your menu bar items into different sections.")
                     .font(.title3.bold())
-                Text("Items can also be arranged by ⌘ Command + dragging them in the menu bar.")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
+                Group {
+                    if #available(macOS 27.0, *) {
+                        Text("macOS orders the items within each section.")
+                    } else {
+                        Text("Items can also be arranged by ⌘ Command + dragging them in the menu bar.")
+                    }
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
             }
             .padding(15)
         }

@@ -119,3 +119,28 @@ struct ItemClick27Tests {
         #expect(!ItemClick27.interfaceIsOpen(windowOwners: windows, ownerPID: 555, baseline: [10]))
     }
 }
+
+@Suite("SectionLayoutEditing27")
+struct SectionLayoutEditing27Tests {
+    let saved: [String: MacOS27Section] = ["ru.keepcoder.Telegram": .hidden, "com.caldis.Mos": .alwaysHidden]
+
+    @Test("Moving an application to a hidden section stores it")
+    func toHidden() {
+        let updated = SectionLayout27.settingSection(.hidden, for: "com.electron.pritunl", in: saved)
+        #expect(updated["com.electron.pritunl"] == .hidden)
+        #expect(updated.count == 3)
+    }
+
+    @Test("Moving an application to Visible removes it, since missing means visible")
+    func toVisible() {
+        let updated = SectionLayout27.settingSection(.visible, for: "ru.keepcoder.Telegram", in: saved)
+        #expect(updated["ru.keepcoder.Telegram"] == nil)
+        #expect(updated["com.caldis.Mos"] == .alwaysHidden)
+    }
+
+    @Test("Moving between hidden sections replaces the entry")
+    func between() {
+        let updated = SectionLayout27.settingSection(.alwaysHidden, for: "ru.keepcoder.Telegram", in: saved)
+        #expect(updated["ru.keepcoder.Telegram"] == .alwaysHidden)
+    }
+}
