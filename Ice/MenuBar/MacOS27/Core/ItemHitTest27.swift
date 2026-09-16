@@ -24,9 +24,10 @@ enum ItemHitTest27 {
     /// The gaps between items are not empty bar: hovering them must not reveal a section,
     /// because the whole right-hand run of icons belongs to the items. The area starts at
     /// the leftmost thing drawn on this display and reaches its right edge. Frames left
-    /// behind on the other display are ignored, and a remembered edge is used only where
-    /// nothing is drawn at all, which is the display whose menu bar is not active: using it
-    /// while items are drawn would swallow the space a concealed section just freed.
+    /// behind on the other display are ignored. The edge remembered from the last read counts
+    /// alongside the frames Ice has cached, because that cache holds only the items Ice
+    /// manages: the run of the bar can start further left than anything in it. Only items
+    /// that are drawn feed that edge, so the space a concealed section frees is not swallowed.
     static func isInsideItemsArea(
         point: CGPoint,
         displayBounds: CGRect,
@@ -45,10 +46,10 @@ enum ItemHitTest27 {
             .filter { $0.isOnScreen && !concealedPIDs.contains($0.ownerPID) && isOnThisDisplay($0.frame) }
             .map(\.frame.minX)
         edges += systemFrames.filter(isOnThisDisplay).map(\.minX)
-        let remembered = rememberedLeftEdge.flatMap { edge in
-            displayBounds.minX...displayBounds.maxX ~= edge ? edge : nil
+        if let remembered = rememberedLeftEdge, displayBounds.minX...displayBounds.maxX ~= remembered {
+            edges.append(remembered)
         }
-        guard let leftEdge = edges.min() ?? remembered else {
+        guard let leftEdge = edges.min() else {
             return false
         }
         return point.x >= leftEdge

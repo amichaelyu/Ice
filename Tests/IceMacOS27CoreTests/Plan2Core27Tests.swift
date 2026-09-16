@@ -373,6 +373,20 @@ struct ItemsZone27Tests {
         ))
     }
 
+    @Test("The remembered edge counts even when items are drawn further right")
+    func rememberedWithDrawn() {
+        // Ice's cache holds only the items it manages, so the run of the bar can start
+        // further left than anything in it.
+        #expect(ItemHitTest27.isInsideItemsArea(
+            point: CGPoint(x: 1250, y: 12),
+            displayBounds: bounds,
+            items: items,
+            concealedPIDs: [],
+            systemFrames: systemFrames,
+            rememberedLeftEdge: 1200
+        ))
+    }
+
     @Test("With nothing known at all, hovering still works")
     func nothingKnown() {
         #expect(!ItemHitTest27.isInsideItemsArea(

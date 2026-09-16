@@ -101,6 +101,9 @@ EXT_REVEALED=$(hover_and_read ext-revealed "$EXT_X" "$EXT_Y" 540 "$EXT_APP")
 ensure_front "$EXT_APP"
 STATS_X=$("$WORK/bin/ax-items" | awk '/eu\.exelban\.Stats/ && $1 >= 0 { print int($1 + $3 / 2); exit }')
 EXT_OVER_ITEM=$(hover_and_read ext-over-item "$STATS_X" 14 540 "$EXT_APP")
+# The gap between two neighbouring items is part of the items' own run of the bar.
+GAP_X=$("$WORK/bin/ax-items" | awk -v from="$STATS_X" '$1 ~ /^-?[0-9]+$/ && $1 > from { print $1, $1 + $3 }' | sort -n | awk 'NR > 1 { gap = $1 - prev; if (gap > 8 && gap < 40 && mid == 0) mid = int(prev + gap / 2) } { prev = $2 } END { print mid }')
+EXT_OVER_GAP=$(hover_and_read ext-over-gap "${GAP_X:-0}" 14 540 "$EXT_APP")
 EXT_OVER_MENU=$(hover_and_read ext-over-menu "$EXT_MENU_X" "$EXT_Y" 540 "$EXT_APP")
 INACTIVE_BUILTIN=$(hover_and_read inactive-builtin "$BUILTIN_X" "$BUILTIN_Y" 589 "$EXT_APP")
 
@@ -112,13 +115,14 @@ DIM_HIDDEN=$(external_leftmost dim-hidden)
 ACTIVE_BUILTIN=$(hover_and_read active-builtin "$BUILTIN_X" "$BUILTIN_Y" 589 "$BUILTIN_APP")
 BUILTIN_OVER_MENU=$(hover_and_read builtin-over-menu "$BUILTIN_MENU_X" "$BUILTIN_Y" 589 "$BUILTIN_APP")
 
-echo "external active: hidden=$EXT_HIDDEN revealed=$EXT_REVEALED over-item=$EXT_OVER_ITEM (stats x=$STATS_X) over-menu=$EXT_OVER_MENU built-in=$INACTIVE_BUILTIN"
+echo "external active: hidden=$EXT_HIDDEN revealed=$EXT_REVEALED over-item=$EXT_OVER_ITEM (stats x=$STATS_X) over-gap=$EXT_OVER_GAP (gap x=${GAP_X:-none}) over-menu=$EXT_OVER_MENU built-in=$INACTIVE_BUILTIN"
 echo "built-in active: hidden=$DIM_HIDDEN built-in=$ACTIVE_BUILTIN over-menu=$BUILTIN_OVER_MENU"
 FAILED=0
 # A value of -1 means the check could not run with the right application in front.
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; FAILED=1; fi; }
 check "hover on the external bar reveals" "[ $EXT_REVEALED -ge 0 ] && [ $EXT_REVEALED -lt $((EXT_HIDDEN - 20)) ]"
 check "hover over a visible item does not reveal" "[ $EXT_OVER_ITEM -ge 0 ] && [ $EXT_OVER_ITEM -ge $((EXT_HIDDEN - 3)) ]"
+check "hover in the gap between two items does not reveal" "[ ${GAP_X:-0} -gt 0 ] && [ $EXT_OVER_GAP -ge 0 ] && [ $EXT_OVER_GAP -ge $((EXT_HIDDEN - 3)) ]"
 check "hover over the application menu does not reveal" "[ $EXT_OVER_MENU -ge 0 ] && [ $EXT_OVER_MENU -ge $((EXT_HIDDEN - 3)) ]"
 check "hover on the inactive built-in bar reveals" "[ $INACTIVE_BUILTIN -ge 0 ] && [ $INACTIVE_BUILTIN -lt $((EXT_HIDDEN - 20)) ]"
 check "hover on the active built-in bar reveals" "[ $ACTIVE_BUILTIN -ge 0 ] && [ $ACTIVE_BUILTIN -lt $((DIM_HIDDEN - 20)) ]"

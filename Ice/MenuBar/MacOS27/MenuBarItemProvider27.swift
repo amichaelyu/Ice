@@ -215,9 +215,12 @@ enum MenuBarItemProvider27 {
                 isOnScreen: ItemDrawing27.isDrawn(itemFrame: raw.frame, activeDisplayBounds: activeDisplayBounds, chevronFrame: chevronFrame)
             ))
         }
-        let leftEdge = newEntries.values
-            .filter { $0.bundleID != Constants.bundleIdentifier && (activeDisplayBounds?.intersects($0.frame) ?? false) }
-            .map(\.frame.minX)
+        // Where the items' own run of the bar begins, for hover hit-testing. Only what is
+        // drawn counts: a concealed item keeps a stale frame further left, which would make
+        // Ice treat the freed part of the bar as occupied.
+        let leftEdge = items
+            .filter { $0.isOnScreen && !$0.isControlItem }
+            .map(\.bounds.minX)
             .min()
         lock.withLock {
             entries = newEntries
