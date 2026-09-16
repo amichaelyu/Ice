@@ -219,7 +219,12 @@ enum MenuBarItemProvider27 {
         // drawn counts: a concealed item keeps a stale frame further left, which would make
         // Ice treat the freed part of the bar as occupied.
         let leftEdge = items
-            .filter { $0.isOnScreen && !$0.isControlItem }
+            .filter { item in
+                // Ice's own items are collapsed to nothing on macOS 27 and report a frame at
+                // the origin, which would drag the edge to the left of the whole bar and make
+                // every spot count as occupied, so hovering would never reveal anything again.
+                item.isOnScreen && item.ownerPID != ownPID && !item.isControlItem && item.bounds.width > 4
+            }
             .map(\.bounds.minX)
             .min()
         lock.withLock {
