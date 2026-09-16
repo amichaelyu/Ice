@@ -371,6 +371,17 @@ final class ControlItem {
 
             button.image = image
         case .hidden, .alwaysHidden:
+            if #available(macOS 27.0, *) {
+                // Ice is signed locally, so MenuBarAgent drops its items whenever anything is
+                // concealed (measured on macOS 27.0). A divider is therefore never drawn, yet a
+                // standard-width status item still holds 18 points of the bar, which reads as a
+                // gap between the neighbouring icons. Sections come from the saved layout on 27,
+                // so the dividers only have to stay in the bar, not to take up room in it.
+                updateStatusItemVisibility(false)
+                button.appearsDisabled = true
+                button.isHighlighted = false
+                return
+            }
             switch state {
             case .showSection:
                 switch appState.settings.advanced.sectionDividerStyle {
