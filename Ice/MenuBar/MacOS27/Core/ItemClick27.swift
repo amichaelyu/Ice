@@ -35,6 +35,21 @@ enum ItemClick27 {
         panelWindow(before: before, windows: windows) != nil
     }
 
+    /// The window of a system item's panel that is already on screen, if one is.
+    ///
+    /// The caller must pass only the windows of the processes that draw those panels. Every
+    /// window at this level and size is not a panel: the Dock's window stands at layer 20 and
+    /// the size of the display and never goes away, so with it in the list every click looked
+    /// like a click that closes a panel (measured on macOS 27.0).
+    ///
+    /// A click that lands while a panel is up is the click that closes it. Putting concealment
+    /// back stalls MenuBarAgent for 100 to 150 ms (measured on macOS 27.0, against the moment
+    /// each assertion was applied), and in the middle of a closing animation that shows as a
+    /// lag — so a click that closes a panel waits for the panel to be gone first.
+    static func openPanelWindow(windows: [(number: Int, layer: Int, height: CGFloat)]) -> Int? {
+        panelWindow(before: [], windows: windows)
+    }
+
     /// Whether the panel that opened in the given window is still on screen.
     static func panelIsOnScreen(window: Int, windows: [(number: Int, layer: Int, height: CGFloat)]) -> Bool {
         windows.contains { $0.number == window }

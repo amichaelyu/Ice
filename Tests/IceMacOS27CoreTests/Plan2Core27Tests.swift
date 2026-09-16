@@ -322,6 +322,20 @@ struct SystemPanel27Tests {
         #expect(ItemClick27.panelWindow(before: before, windows: after) == 45)
     }
 
+    @Test("A panel already on screen is the one a click would close")
+    func alreadyOpen() {
+        let withPanel: [(number: Int, layer: Int, height: CGFloat)] = [
+            (number: 10, layer: 0, height: 900.0),
+            (number: 45, layer: 21, height: 1080.0),
+        ]
+        let withoutPanel: [(number: Int, layer: Int, height: CGFloat)] = [
+            (number: 10, layer: 0, height: 900.0),
+            (number: 11, layer: 25, height: 38.0),
+        ]
+        #expect(ItemClick27.openPanelWindow(windows: withPanel) == 45)
+        #expect(ItemClick27.openPanelWindow(windows: withoutPanel) == nil)
+    }
+
     @Test("A panel is open while its window is on screen, and closed once it goes")
     func staysOnScreen() {
         let open: [(number: Int, layer: Int, height: CGFloat)] = [(number: 45, layer: 21, height: 1080.0)]

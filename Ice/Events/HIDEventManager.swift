@@ -5,6 +5,7 @@
 
 import Cocoa
 import Combine
+import OSLog
 
 /// Manager that monitors input events and implements the features
 /// that are triggered by them, such as showing hidden items on
@@ -371,6 +372,9 @@ extension HIDEventManager {
     /// Marks the clicks Ice replays, so the tap lets them through.
     private static let replayedClickMarker: Int64 = 0x1CE_27_C1C
 
+    /// Times the steps of a bridged click, which happen on both opening and closing a panel.
+    private static let bridgeLogger = Logger(subsystem: "com.jordanbaird.Ice", category: "ClickBridge27")
+
     /// Marks Ice's click that makes a display's menu bar active before an item is pressed.
     static let menuBarActivationMarker: Int64 = 0x1CE_27_BA2
 
@@ -387,6 +391,10 @@ extension HIDEventManager {
         "com.apple.menuextra.battery",
         "com.apple.menuextra.wifi",
     ]
+
+    /// The system item whose panel Ice last opened, so a second click on the same item is
+    /// understood as the click that dismisses it.
+    private nonisolated(unsafe) static var itemShowingPanel: String?
 
     @available(macOS 27.0, *)
     private func handleSystemItemClick27(_ event: CGEvent, appState: AppState) -> CGEvent? {
@@ -425,10 +433,28 @@ extension HIDEventManager {
         let systemItem = MenuBarItemProvider27.systemItem(at: location)
         let mayOpenFromPress = systemItem.map { !Self.systemItemsIgnoringPress.contains($0.identifier) } ?? false
         Task {
+            // A click that lands while a panel is up is the click that dismisses it, and
+            // Escape dismisses it just as well — with no lift of concealment at all. Lifting
+            // for such a click brought every hidden item back on screen first, and the panel
+            // only answered once MenuBarAgent had finished moving the bar: the icons appeared,
+            // and the panel closed late behind them.
+            if ItemClick27.openPanelWindow(windows: Self.windowsForPanelCheck()) != nil {
+                Self.postEscape()
+                Self.bridgeLogger.debug("Click bridge: a panel was open, dismissed with Escape")
+                guard systemItem?.identifier != Self.itemShowingPanel else {
+                    Self.itemShowingPanel = nil
+                    return
+                }
+                // A different system item was clicked, so its own panel still has to open.
+                try? await Task.sleep(for: Self.panelDismissWait)
+            }
             if mayOpenFromPress, let systemItem {
                 let baseline = Self.windowNumbers()
                 await Self.press(systemItem.element)
                 if await Self.waitForPanel(baseline: baseline, pollsOf50ms: 5) {
+                    // Remembered here as well, or the next click on this item would dismiss
+                    // its panel and open it again in the same breath.
+                    Self.itemShowingPanel = systemItem.identifier
                     return
                 }
                 // Waiting for a panel that never comes only delays the click, so an item
@@ -440,8 +466,13 @@ extension HIDEventManager {
             // a click that arrives while the assertion still stands, which is why the clock
             // sometimes did nothing and opened on the second try. Nothing else is done before
             // the replay, so the click is as quick as the release allows.
+            let bridgeStarted = ProcessInfo.processInfo.systemUptime
+            Self.bridgeLogger.debug("Click bridge: holding the click, lifting concealment")
             await concealer.suspendReleased(for: Self.clickRestoreDelay)
+            let released = (ProcessInfo.processInfo.systemUptime - bridgeStarted) * 1000
             Self.replayClick(at: location)
+            Self.itemShowingPanel = systemItem?.identifier
+            Self.bridgeLogger.debug("Click bridge: lifted in \(released, privacy: .public) ms, click replayed")
         }
         heldBackReleaseUntil = .now + .seconds(1)
         return nil
@@ -473,19 +504,52 @@ extension HIDEventManager {
         return Set(windows.compactMap { $0[kCGWindowNumber as String] as? Int })
     }
 
-    /// The windows on screen, as `ItemClick27.panelOpened` wants them.
+    /// The processes that draw the system items' panels.
+    ///
+    /// Without this, the Dock passes for an open panel: its window stands at layer 20 and the
+    /// full size of the display, and it is always there, so every click looked like a click
+    /// that closes a panel and every wait for that panel to go ran into its timeout (measured
+    /// on macOS 27.0: 12 clicks in a row judged "panel already open").
+    private static let panelOwnerBundleIDs: Set<String> = [
+        "com.apple.notificationcenterui",
+        "com.apple.controlcenter",
+    ]
+
+    /// The windows on screen that could be a system item's panel, as `ItemClick27` wants them.
     private static func windowsForPanelCheck() -> [(number: Int, layer: Int, height: CGFloat)] {
+        let owners = Set(
+            NSWorkspace.shared.runningApplications
+                .filter { panelOwnerBundleIDs.contains($0.bundleIdentifier ?? "") }
+                .map(\.processIdentifier)
+        )
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
         return windows.compactMap { window in
             guard
                 let number = window[kCGWindowNumber as String] as? Int,
                 let layer = window[kCGWindowLayer as String] as? Int,
+                let ownerPID = window[kCGWindowOwnerPID as String] as? pid_t,
+                owners.contains(ownerPID),
                 let bounds = window[kCGWindowBounds as String] as? [String: CGFloat],
                 let height = bounds["Height"]
             else {
                 return nil
             }
             return (number: number, layer: layer, height: height)
+        }
+    }
+
+    /// How long the panel that was open takes to go after Escape, before the item that was
+    /// clicked is given its own turn.
+    private static let panelDismissWait = Duration.milliseconds(120)
+
+    /// Presses Escape, which dismisses an open system panel.
+    ///
+    /// Notification Center and Control Centre both answer it while items stay concealed, so a
+    /// click that dismisses a panel needs no lift of concealment at all.
+    private static func postEscape() {
+        let source = CGEventSource(stateID: .hidSystemState)
+        for down in [true, false] {
+            CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: down)?.post(tap: .cghidEventTap)
         }
     }
 
