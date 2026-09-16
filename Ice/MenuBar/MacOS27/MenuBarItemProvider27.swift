@@ -79,6 +79,16 @@ enum MenuBarItemProvider27 {
         lock.withLock { lastSystemItemFrames }
     }
 
+    /// The Accessibility element of the system item drawn at the given point, from the last
+    /// read. Control Centre opens from a press on it without lifting concealment.
+    static func systemItemElement(at point: CGPoint) -> AXUIElement? {
+        lock.withLock {
+            entries.values
+                .first { $0.bundleID == menuBarAgentBundleID && $0.frame.insetBy(dx: -1, dy: -1).contains(point) }?
+                .element
+        }
+    }
+
     /// The leftmost item drawn on the given display, from the last read while its menu bar
     /// was active.
     static func leftEdge(for displayID: CGDirectDisplayID) -> CGFloat? {

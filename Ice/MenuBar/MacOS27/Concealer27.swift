@@ -138,6 +138,15 @@ final class Concealer27 {
         }
     }
 
+    /// Puts concealment back before the suspension would have run out.
+    func endSuspension() {
+        guard suspendedUntil != nil else {
+            return
+        }
+        suspendedUntil = nil
+        update()
+    }
+
     /// Shows an application for a moment, to click or photograph its item.
     /// Every call must be balanced by ``endTemporaryShow(bundleID:)``.
     func showTemporarily(bundleID: String) {

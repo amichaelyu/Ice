@@ -385,13 +385,73 @@ extension HIDEventManager {
         ) else {
             return event
         }
-        concealer.suspend(for: .milliseconds(1500))
         let location = event.location
+        // Control Centre opens from an Accessibility press even while items are concealed
+        // (measured on macOS 27.0: its panel appears after about 177 ms). The clock, the
+        // battery and Wi-Fi ignore the press, so for those the concealment is lifted and the
+        // click replayed — and put back the moment their panel is up, rather than after a
+        // fixed second and a half, which is what made every hidden item flash into view.
+        let element = MenuBarItemProvider27.systemItemElement(at: location)
         Task {
+            let baseline = Self.windowNumbers()
+            if let element {
+                await Self.press(element)
+                if await Self.waitForPanel(baseline: baseline, pollsOf50ms: 5) {
+                    return
+                }
+            }
+            concealer.suspend(for: .milliseconds(1500))
             try? await Task.sleep(for: .milliseconds(150))
             Self.replayClick(at: location)
+            if await Self.waitForPanel(baseline: baseline, pollsOf50ms: 24) {
+                concealer.endSuspension()
+            }
         }
         return nil
+    }
+
+    /// The window numbers currently on screen.
+    private static func windowNumbers() -> Set<Int> {
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        return Set(windows.compactMap { $0[kCGWindowNumber as String] as? Int })
+    }
+
+    /// The windows on screen, as `ItemClick27.panelOpened` wants them.
+    private static func windowsForPanelCheck() -> [(number: Int, layer: Int, height: CGFloat)] {
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        return windows.compactMap { window in
+            guard
+                let number = window[kCGWindowNumber as String] as? Int,
+                let layer = window[kCGWindowLayer as String] as? Int,
+                let bounds = window[kCGWindowBounds as String] as? [String: CGFloat],
+                let height = bounds["Height"]
+            else {
+                return nil
+            }
+            return (number: number, layer: layer, height: height)
+        }
+    }
+
+    /// Waits for a system item's panel to appear.
+    @available(macOS 27.0, *)
+    private static func waitForPanel(baseline: Set<Int>, pollsOf50ms: Int) async -> Bool {
+        for _ in 0..<pollsOf50ms {
+            try? await Task.sleep(for: .milliseconds(50))
+            if ItemClick27.panelOpened(before: baseline, windows: windowsForPanelCheck()) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Presses an Accessibility element off the main thread, which the call can block.
+    private static func press(_ element: AXUIElement) async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                _ = AXUIElementPerformAction(element, kAXPressAction as CFString)
+                continuation.resume()
+            }
+        }
     }
 
     private static func replayClick(at location: CGPoint) {

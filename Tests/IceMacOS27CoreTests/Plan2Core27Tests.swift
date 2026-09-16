@@ -284,6 +284,37 @@ struct ItemImageBackground27Tests {
     }
 }
 
+@Suite("System item panel")
+struct SystemPanel27Tests {
+    // Measured on macOS 27.0: pressing Control Centre through Accessibility opens
+    // "Control Center", layer 101, 656×964, after about 177 ms.
+    let before: Set<Int> = [10, 11]
+
+    @Test("A new tall window above the menu bar means the panel opened")
+    func opened() {
+        let after: [(number: Int, layer: Int, height: CGFloat)] = [(number: 10, layer: 20, height: 1080.0), (number: 42, layer: 101, height: 964.0)]
+        #expect(ItemClick27.panelOpened(before: before, windows: after))
+    }
+
+    @Test("The windows that were already there do not count")
+    func nothingNew() {
+        let after: [(number: Int, layer: Int, height: CGFloat)] = [(number: 10, layer: 20, height: 1080.0), (number: 11, layer: 101, height: 964.0)]
+        #expect(!ItemClick27.panelOpened(before: before, windows: after))
+    }
+
+    @Test("A small new window is not a panel")
+    func tooSmall() {
+        let after: [(number: Int, layer: Int, height: CGFloat)] = [(number: 43, layer: 101, height: 28.0)]
+        #expect(!ItemClick27.panelOpened(before: before, windows: after))
+    }
+
+    @Test("An ordinary window opening at the same moment is not a panel")
+    func ordinaryWindow() {
+        let after: [(number: Int, layer: Int, height: CGFloat)] = [(number: 44, layer: 0, height: 700.0)]
+        #expect(!ItemClick27.panelOpened(before: before, windows: after))
+    }
+}
+
 @Suite("Items zone")
 struct ItemsZone27Tests {
     let bounds = CGRect(x: 0, y: 0, width: 1920, height: 1080)
