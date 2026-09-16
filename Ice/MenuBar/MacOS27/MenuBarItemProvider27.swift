@@ -44,6 +44,10 @@ enum MenuBarItemProvider27 {
     nonisolated(unsafe) private static var entries = [CGWindowID: Entry]()
     nonisolated(unsafe) private static var lastOverflowButtonFrame: CGRect?
     nonisolated(unsafe) private static var lastSystemItemFrames = [CGRect]()
+    /// The leftmost item drawn on each display, from the last read while that display's
+    /// menu bar was active. Hover hit-testing needs it for the display that is not active,
+    /// where Accessibility reports no frames at all.
+    nonisolated(unsafe) private static var lastLeftEdges = [CGDirectDisplayID: CGFloat]()
     /// Only read and written on `queue`.
     nonisolated(unsafe) private static var scanSchedule = AccessibilityScanSchedule27()
 
@@ -73,6 +77,12 @@ enum MenuBarItemProvider27 {
     /// Frames of the system items hosted by MenuBarAgent, from the last read.
     static func systemItemFrames() -> [CGRect] {
         lock.withLock { lastSystemItemFrames }
+    }
+
+    /// The leftmost item drawn on the given display, from the last read while its menu bar
+    /// was active.
+    static func leftEdge(for displayID: CGDirectDisplayID) -> CGFloat? {
+        lock.withLock { lastLeftEdges[displayID] }
     }
 
     /// Frame of the system overflow button ("<<" / ">>"), from the last read.
@@ -194,12 +204,19 @@ enum MenuBarItemProvider27 {
                 isOnScreen: ItemDrawing27.isDrawn(itemFrame: raw.frame, activeDisplayBounds: activeDisplayBounds, chevronFrame: chevronFrame)
             ))
         }
+        let leftEdge = newEntries.values
+            .filter { $0.bundleID != Constants.bundleIdentifier && (activeDisplayBounds?.intersects($0.frame) ?? false) }
+            .map(\.frame.minX)
+            .min()
         lock.withLock {
             entries = newEntries
             lastOverflowButtonFrame = chevronFrame
             lastSystemItemFrames = newEntries.values
                 .filter { $0.bundleID == menuBarAgentBundleID && (activeDisplayBounds?.intersects($0.frame) ?? true) }
                 .map(\.frame)
+            if let activeDisplayID, let leftEdge {
+                lastLeftEdges[activeDisplayID] = leftEdge
+            }
         }
         return items
     }

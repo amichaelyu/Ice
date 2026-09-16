@@ -284,6 +284,77 @@ struct ItemImageBackground27Tests {
     }
 }
 
+@Suite("Items zone")
+struct ItemsZone27Tests {
+    let bounds = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+    let items = [
+        ItemHitTest27.Item(frame: CGRect(x: 1400, y: 2, width: 30, height: 24), ownerPID: 11, isOnScreen: true),
+        ItemHitTest27.Item(frame: CGRect(x: 1500, y: 2, width: 30, height: 24), ownerPID: 12, isOnScreen: true),
+    ]
+    let systemFrames = [CGRect(x: 1700, y: 4, width: 26, height: 22)]
+
+    @Test("The gap between two items belongs to the items, not to empty space")
+    func gapBelongsToItems() {
+        #expect(ItemHitTest27.isInsideItemsArea(
+            point: CGPoint(x: 1460, y: 12),
+            displayBounds: bounds,
+            items: items,
+            concealedPIDs: [],
+            systemFrames: systemFrames,
+            rememberedLeftEdge: nil
+        ))
+    }
+
+    @Test("The bar left of every item is still empty space")
+    func leftOfItemsIsEmpty() {
+        #expect(!ItemHitTest27.isInsideItemsArea(
+            point: CGPoint(x: 900, y: 12),
+            displayBounds: bounds,
+            items: items,
+            concealedPIDs: [],
+            systemFrames: systemFrames,
+            rememberedLeftEdge: nil
+        ))
+    }
+
+    @Test("Frames left behind on the other display do not drag the edge across")
+    func otherDisplayIgnored() {
+        let stray = ItemHitTest27.Item(frame: CGRect(x: -500, y: 2, width: 30, height: 24), ownerPID: 13, isOnScreen: true)
+        #expect(!ItemHitTest27.isInsideItemsArea(
+            point: CGPoint(x: 900, y: 12),
+            displayBounds: bounds,
+            items: items + [stray],
+            concealedPIDs: [],
+            systemFrames: systemFrames,
+            rememberedLeftEdge: nil
+        ))
+    }
+
+    @Test("Where nothing is drawn, the edge remembered from that display is used")
+    func rememberedEdge() {
+        #expect(ItemHitTest27.isInsideItemsArea(
+            point: CGPoint(x: 1450, y: 12),
+            displayBounds: bounds,
+            items: [],
+            concealedPIDs: [],
+            systemFrames: [],
+            rememberedLeftEdge: 1400
+        ))
+    }
+
+    @Test("With nothing known at all, hovering still works")
+    func nothingKnown() {
+        #expect(!ItemHitTest27.isInsideItemsArea(
+            point: CGPoint(x: 1450, y: 12),
+            displayBounds: bounds,
+            items: [],
+            concealedPIDs: [],
+            systemFrames: [],
+            rememberedLeftEdge: nil
+        ))
+    }
+}
+
 @Suite("Settled item frames")
 struct SettledFrames27Tests {
     let a = CGRect(x: 100, y: 0, width: 30, height: 24)

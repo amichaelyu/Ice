@@ -627,10 +627,41 @@ extension HIDEventManager {
     /// A Boolean value that indicates whether the mouse pointer is within
     /// the bounds of an empty space in the menu bar.
     func isMouseInsideEmptyMenuBarSpace(appState: AppState, screen: NSScreen) -> Bool {
-        isMouseInsideMenuBar(appState: appState, screen: screen) &&
-        !isMouseInsideApplicationMenu(appState: appState, screen: screen) &&
-        !isMouseInsideMenuBarItem(appState: appState, screen: screen) &&
-        !isMouseInsideNotch(appState: appState, screen: screen)
+        guard
+            isMouseInsideMenuBar(appState: appState, screen: screen),
+            !isMouseInsideApplicationMenu(appState: appState, screen: screen),
+            !isMouseInsideMenuBarItem(appState: appState, screen: screen),
+            !isMouseInsideNotch(appState: appState, screen: screen)
+        else {
+            return false
+        }
+        if #available(macOS 27.0, *) {
+            // The gaps between items are part of the items' own run of the bar.
+            return !isMouseInsideItemsArea(appState: appState, screen: screen)
+        }
+        return true
+    }
+
+    /// A Boolean value that indicates whether the mouse pointer rests in the part of the
+    /// menu bar that holds items, including the gaps between them.
+    @available(macOS 27.0, *)
+    func isMouseInsideItemsArea(appState: AppState, screen: NSScreen) -> Bool {
+        guard let mouseLocation = MouseHelpers.locationCoreGraphics else {
+            return false
+        }
+        let items = appState.itemManager.itemCache.managedItems.map { item in
+            ItemHitTest27.Item(frame: item.bounds, ownerPID: item.ownerPID, isOnScreen: item.isOnScreen)
+        }
+        let systemFrames = MenuBarItemProvider27.systemItemFrames()
+            + [MenuBarItemProvider27.overflowButtonFrame()].compactMap { $0 }
+        return ItemHitTest27.isInsideItemsArea(
+            point: mouseLocation,
+            displayBounds: CGDisplayBounds(screen.displayID),
+            items: items,
+            concealedPIDs: appState.concealer27.concealedPIDs,
+            systemFrames: systemFrames,
+            rememberedLeftEdge: MenuBarItemProvider27.leftEdge(for: screen.displayID)
+        )
     }
 
     /// A Boolean value that indicates whether the mouse pointer is within
