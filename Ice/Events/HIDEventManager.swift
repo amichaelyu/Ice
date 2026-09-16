@@ -27,6 +27,11 @@ final class HIDEventManager: ObservableObject {
     /// The last empty menu bar spot hovered on each display (see `ItemClicker27`).
     private var lastEmptyMenuBarPoints = [CGDirectDisplayID: CGPoint]()
 
+    /// Until when the release of a held-back click is held back as well (see
+    /// `handleSystemItemClick27`). The deadline keeps a release that never comes from
+    /// swallowing an unrelated one later.
+    private var heldBackReleaseUntil: ContinuousClock.Instant?
+
 
 
     /// A Boolean value that indicates whether the manager is enabled.
@@ -120,7 +125,7 @@ final class HIDEventManager: ObservableObject {
     /// clock (measured on macOS 27.0). The tap holds such a click back, releases the
     /// assertions for a moment, and replays the click.
     private(set) lazy var systemItemClickTap = EventTap(
-        type: .leftMouseDown,
+        types: [.leftMouseDown, .leftMouseUp],
         location: .hidEventTap,
         placement: .headInsertEventTap,
         option: .defaultTap
@@ -388,6 +393,17 @@ extension HIDEventManager {
         guard event.getIntegerValueField(.eventSourceUserData) != Self.replayedClickMarker else {
             return event
         }
+        if event.type == .leftMouseUp {
+            // A press Ice holds back has its release held back with it. MenuBarAgent would
+            // otherwise be handed a release with no press behind it, moments before the
+            // replayed click that carries both.
+            guard let until = heldBackReleaseUntil, ContinuousClock.now < until else {
+                heldBackReleaseUntil = nil
+                return event
+            }
+            heldBackReleaseUntil = nil
+            return nil
+        }
         let concealer = appState.concealer27
         // The frames of the display the click landed on, so the clock of the display whose bar
         // is not active is recognised as well.
@@ -424,23 +440,37 @@ extension HIDEventManager {
             // a click that arrives while the assertion still stands, which is why the clock
             // sometimes did nothing and opened on the second try. Nothing else is done before
             // the replay, so the click is as quick as the release allows.
-            await concealer.suspendReleased(for: .milliseconds(400))
+            await concealer.suspendReleased(for: Self.clickRestoreDelay)
             Self.replayClick(at: location)
         }
+        heldBackReleaseUntil = .now + .seconds(1)
         return nil
+    }
+
+    /// How long concealment stays lifted around a replayed click.
+    ///
+    /// MenuBarAgent needs the lift to act on the click at all, and every millisecond of it is
+    /// a millisecond of the bar moving: the items slide back in, then out again. The panel's
+    /// own window appears about 166 ms after the click (measured on macOS 27.0), so a lift
+    /// that ends around then has the bar settling while the panel animates, which is what made
+    /// the animation stutter. The `MacOS27ClickRestoreDelay` default overrides it, in
+    /// milliseconds, for measuring.
+    private static var clickRestoreDelay: Duration {
+        let stored = Defaults.integer(forKey: .macOS27ClickRestoreDelay)
+        return .milliseconds(stored > 0 ? min(max(stored, 30), 2000) : 400)
     }
 
 
 
     /// The window numbers currently on screen.
     private static func windowNumbers() -> Set<Int> {
-        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
         return Set(windows.compactMap { $0[kCGWindowNumber as String] as? Int })
     }
 
     /// The windows on screen, as `ItemClick27.panelOpened` wants them.
     private static func windowsForPanelCheck() -> [(number: Int, layer: Int, height: CGFloat)] {
-        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
         return windows.compactMap { window in
             guard
                 let number = window[kCGWindowNumber as String] as? Int,

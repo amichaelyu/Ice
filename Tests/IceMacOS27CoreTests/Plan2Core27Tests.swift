@@ -313,6 +313,22 @@ struct SystemPanel27Tests {
         let after: [(number: Int, layer: Int, height: CGFloat)] = [(number: 44, layer: 0, height: 700.0)]
         #expect(!ItemClick27.panelOpened(before: before, windows: after))
     }
+
+    // Measured on macOS 27.0: the clock opens "Notification Center", layer 21, the size of
+    // the display, about 166 ms after the click. It stands far below Control Centre's level.
+    @Test("Notification Center counts, low as its window stands")
+    func notificationCenter() {
+        let after: [(number: Int, layer: Int, height: CGFloat)] = [(number: 45, layer: 21, height: 1080.0)]
+        #expect(ItemClick27.panelWindow(before: before, windows: after) == 45)
+    }
+
+    @Test("A panel is open while its window is on screen, and closed once it goes")
+    func staysOnScreen() {
+        let open: [(number: Int, layer: Int, height: CGFloat)] = [(number: 45, layer: 21, height: 1080.0)]
+        let closed: [(number: Int, layer: Int, height: CGFloat)] = [(number: 10, layer: 20, height: 1080.0)]
+        #expect(ItemClick27.panelIsOnScreen(window: 45, windows: open))
+        #expect(!ItemClick27.panelIsOnScreen(window: 45, windows: closed))
+    }
 }
 
 @Suite("Items zone")
