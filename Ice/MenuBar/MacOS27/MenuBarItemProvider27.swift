@@ -48,6 +48,9 @@ enum MenuBarItemProvider27 {
     /// System item frames per display. MenuBarAgent describes the bars of both displays in its
     /// windows, unlike other applications, whose items only have frames on the active one.
     nonisolated(unsafe) private static var lastSystemFramesByDisplay = [CGDirectDisplayID: [CGRect]]()
+    /// How far left of the clock's own left edge the other system items reach (measured on
+    /// macOS 27.0: 122 points on both displays — battery, Wi-Fi and Control Centre).
+    private static let systemItemsSpan: CGFloat = 130
     /// The leftmost item drawn on each display, from the last read while that display's
     /// menu bar was active. Hover hit-testing needs it for the display that is not active,
     /// where Accessibility reports no frames at all.
@@ -205,7 +208,13 @@ enum MenuBarItemProvider27 {
                 ))
             }
             if bundleID == menuBarAgentBundleID {
-                var perDisplay = [CGDirectDisplayID: [CGRect]]()
+                // MenuBarAgent's window on the display whose bar is not active holds every item
+                // drawn there, not only the system ones, so taking them all made Ice treat any
+                // click as a click on a system item and lift concealment for it. The system
+                // items are the rightmost group, and the clock is the widest of them: keep the
+                // items within the span they occupy (measured on macOS 27.0: 237 points from the
+                // leftmost of them to the clock's right edge).
+                var framesByDisplay = [CGDirectDisplayID: [CGRect]]()
                 for window in elements(application, kAXWindowsAttribute) ?? [] {
                     for child in elements(window, kAXChildrenAttribute) ?? [] {
                         let hosted = elements(child, kAXChildrenAttribute)?.first ?? child
@@ -218,8 +227,14 @@ enum MenuBarItemProvider27 {
                         guard matches > 0 else {
                             continue
                         }
-                        perDisplay[display, default: []].append(itemFrame)
+                        framesByDisplay[display, default: []].append(itemFrame)
                     }
+                }
+                let perDisplay = framesByDisplay.compactMapValues { frames -> [CGRect]? in
+                    guard let clock = frames.max(by: { $0.width < $1.width }), clock.width > 80 else {
+                        return nil
+                    }
+                    return frames.filter { $0.minX >= clock.minX - systemItemsSpan }
                 }
                 lock.withLock { lastSystemFramesByDisplay = perDisplay }
                 let systemFrames = rawItems
