@@ -12,10 +12,11 @@ import ScreenCaptureKit
 /// MenuBarAgent draws every item into one menu bar, so Ice's per-item window captures
 /// are gone. Only a capture of the display holds the glyphs (measured on macOS 27.0: a
 /// capture of MenuBarAgent's bar window holds just the application menu), and it
-/// includes the bar's background. Images keep that background, and the Ice Bar and the
-/// layout window take their colour from the same capture. Items on an inactive bar are
-/// drawn dimmer, so only the active bar is captured. Images are kept on disk, so an item
-/// that is concealed still has one.
+/// includes the bar's background. That background is cut away, leaving the glyph on
+/// transparency, so the Ice Bar and the layout window draw every item on their own
+/// colour whatever is behind the menu bar. Items on an inactive bar are drawn dimmer, so
+/// only the active bar is captured. Images are kept on disk, so an item that is concealed
+/// still has one.
 @available(macOS 27.0, *)
 @MainActor
 final class ItemImageStore27 {
@@ -26,22 +27,51 @@ final class ItemImageStore27 {
         let scale: CGFloat
     }
 
+    /// Bumped when stored images change shape. Version 1 kept the menu bar behind the
+    /// glyph; version 2 cut it away but left the glyph in the colour it was captured in.
+    private static let storeVersion = "3"
+
     private let logger = Logger(category: "ItemImageStore27")
     private let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Ice/ItemImages", isDirectory: true)
     private var index = [String: IndexEntry]()
     private var loaded = [String: CapturedImage]()
     private var photoSchedule = PhotoSchedule27()
-
-    /// The colour of the active menu bar's background, from the last capture.
-    private(set) var barColor: CGColor?
+    private var appearanceObserver: NSObjectProtocol?
 
     init() {
+        let versionFile = directory.appendingPathComponent("version.txt")
+        guard (try? String(contentsOf: versionFile, encoding: .utf8)) == Self.storeVersion else {
+            try? FileManager.default.removeItem(at: directory)
+            return
+        }
         if
             let data = try? Data(contentsOf: directory.appendingPathComponent("index.json")),
             let stored = try? JSONDecoder().decode([String: IndexEntry].self, from: data)
         {
             index = stored
+        }
+        // Glyphs are stored in the colour that suits the current appearance, so a switch
+        // between light and dark needs them captured again.
+        appearanceObserver = DistributedNotificationCenter.default().addObserver(
+            forName: DistributedNotificationCenter.interfaceThemeChangedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.discardImages()
+            }
+        }
+    }
+
+    /// Drops every stored image, so they are captured again.
+    private func discardImages() {
+        loaded.removeAll()
+        index.removeAll()
+        photoSchedule = PhotoSchedule27()
+        let directory = directory
+        Task.detached(priority: .utility) {
+            try? FileManager.default.removeItem(at: directory)
         }
     }
 
@@ -81,18 +111,16 @@ final class ItemImageStore27 {
             return
         }
         let (strip, scale) = captured
-        if let topRow = strip.cropping(to: CGRect(x: 0, y: 0, width: strip.width, height: max(1, Int(scale)))) {
-            barColor = topRow.averageColor(option: .ignoreAlpha)
-        }
         var stored = 0
         for item in items where item.isOnScreen && !item.isControlItem && !concealedPIDs.contains(item.ownerPID) {
             guard
                 let rect = ItemImages27.cropRect(itemFrame: item.bounds, stripFrame: stripFrame, scale: scale),
-                let image = strip.cropping(to: rect)
+                let image = strip.cropping(to: rect),
+                let glyph = withoutBackground(image)
             else {
                 continue
             }
-            store(image, scale: scale, key: item.tag.description)
+            store(glyph, scale: scale, key: item.tag.description)
             stored += 1
         }
         writeIndex()
@@ -147,6 +175,53 @@ final class ItemImageStore27 {
         }
     }
 
+    /// The colour glyphs are drawn in, which is the readable one on the flat background
+    /// the Ice Bar and the layout window use.
+    private static func glyphColor() -> (r: UInt8, g: UInt8, b: UInt8) {
+        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        return isDark ? (255, 255, 255) : (0, 0, 0)
+    }
+
+    /// The image with the menu bar behind the glyph made transparent.
+    private func withoutBackground(_ image: CGImage) -> CGImage? {
+        let width = image.width
+        let height = image.height
+        let count = width * height * 4
+        let bytes = UnsafeMutablePointer<UInt8>.allocate(capacity: count)
+        defer { bytes.deallocate() }
+        bytes.initialize(repeating: 0, count: count)
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let context = CGContext(
+            data: bytes,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: bitmapInfo
+        ) else {
+            return nil
+        }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let pixels = Array(UnsafeBufferPointer(start: bytes, count: count))
+        let background = ItemImages27.backgroundColor(pixels: pixels, width: width, height: height)
+        var keyed = ItemImages27.tinted(
+            pixels: ItemImages27.removingBackground(pixels: pixels, width: width, height: height, background: background),
+            colour: Self.glyphColor()
+        )
+        // The bitmap holds premultiplied colours, so each channel follows the new opacity.
+        for index in stride(from: 0, to: count, by: 4) {
+            let opacity = Double(keyed[index + 3]) / 255
+            for channel in 0..<3 {
+                keyed[index + channel] = UInt8((Double(keyed[index + channel]) * opacity).rounded())
+            }
+        }
+        keyed.withUnsafeMutableBytes { buffer in
+            bytes.update(from: buffer.bindMemory(to: UInt8.self).baseAddress!, count: count)
+        }
+        return context.makeImage()
+    }
+
     private func store(_ image: CGImage, scale: CGFloat, key: String) {
         let fileName = ItemImages27.fileName(forTag: key)
         loaded[key] = CapturedImage(cgImage: image, scale: scale)
@@ -166,9 +241,11 @@ final class ItemImageStore27 {
             return
         }
         let directory = directory
+        let version = Self.storeVersion
         Task.detached(priority: .utility) {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try? data.write(to: directory.appendingPathComponent("index.json"), options: .atomic)
+            try? version.write(to: directory.appendingPathComponent("version.txt"), atomically: true, encoding: .utf8)
         }
     }
 }

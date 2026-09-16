@@ -195,8 +195,8 @@ final class IceBarPanel: NSPanel {
         // the main queue, so we need to update manually once before showing
         // the panel to prevent the color from flashing.
         colorManager.updateAllProperties(with: frame, screen: screen)
-        if #available(macOS 27.0, *), let color = appState.itemImageStore27.barColor {
-            colorManager.setColor27(color)
+        if #available(macOS 27.0, *) {
+            colorManager.setColor27()
         }
 
         orderFrontRegardless()

@@ -120,6 +120,112 @@ struct ItemClick27Tests {
     }
 }
 
+@Suite("Item image background")
+struct ItemImageBackground27Tests {
+    /// A 5×5 tile of `background` with `centre` in the middle and an optional second
+    /// pixel at (1, 1), which stands for a soft edge of the glyph.
+    func tile(
+        background: (r: UInt8, g: UInt8, b: UInt8),
+        centre: (r: UInt8, g: UInt8, b: UInt8) = (255, 255, 255),
+        edge: (r: UInt8, g: UInt8, b: UInt8)? = nil
+    ) -> [UInt8] {
+        var pixels = [UInt8]()
+        for y in 0..<5 {
+            for x in 0..<5 {
+                var colour = background
+                if x == 2, y == 2 {
+                    colour = centre
+                } else if x == 1, y == 1, let edge {
+                    colour = edge
+                }
+                pixels += [colour.r, colour.g, colour.b, 255]
+            }
+        }
+        return pixels
+    }
+
+    func alpha(_ pixels: [UInt8], x: Int, y: Int) -> UInt8 {
+        pixels[(y * 5 + x) * 4 + 3]
+    }
+
+    @Test("The background colour is taken from the edges, not the glyph")
+    func backgroundFromEdges() {
+        let background = ItemImages27.backgroundColor(pixels: tile(background: (100, 140, 170)), width: 5, height: 5)
+        #expect(background.r == 100 && background.g == 140 && background.b == 170)
+    }
+
+    @Test("Background pixels become transparent and the glyph stays opaque")
+    func backgroundRemoved() {
+        let pixels = ItemImages27.removingBackground(pixels: tile(background: (100, 140, 170)), width: 5, height: 5, background: (100, 140, 170))
+        #expect(alpha(pixels, x: 0, y: 0) == 0)
+        #expect(alpha(pixels, x: 2, y: 2) == 255)
+    }
+
+    @Test("The glyph keeps its own colour")
+    func glyphColourKept() {
+        let pixels = ItemImages27.removingBackground(pixels: tile(background: (100, 140, 170), centre: (40, 200, 90)), width: 5, height: 5, background: (100, 140, 170))
+        let offset = (2 * 5 + 2) * 4
+        #expect(pixels[offset] == 40 && pixels[offset + 1] == 200 && pixels[offset + 2] == 90)
+    }
+
+    @Test("A pixel halfway between the glyph and the background is half opaque")
+    func halfBlendIsHalfOpaque() {
+        // Glyph (20, 20, 20) on background (100, 140, 170); the edge pixel is their mix.
+        let pixels = ItemImages27.removingBackground(
+            pixels: tile(background: (100, 140, 170), centre: (20, 20, 20), edge: (60, 80, 95)),
+            width: 5,
+            height: 5,
+            background: (100, 140, 170)
+        )
+        #expect(alpha(pixels, x: 2, y: 2) == 255)
+        let edge = Int(alpha(pixels, x: 1, y: 1))
+        #expect(edge > 112 && edge < 143)
+    }
+
+    @Test("A glyph the colour of the bar's text stays fully opaque")
+    func faintGlyphStaysOpaque() {
+        // A dark grey glyph on a light bar: far less contrast, still the glyph.
+        let pixels = ItemImages27.removingBackground(
+            pixels: tile(background: (157, 194, 218), centre: (120, 150, 170)),
+            width: 5,
+            height: 5,
+            background: (157, 194, 218)
+        )
+        #expect(alpha(pixels, x: 2, y: 2) == 255)
+    }
+
+    @Test("Beside a strong glyph, a pixel close to the background stays faint")
+    func edgesFade() {
+        // Opacity is a share of the glyph's own contrast, so the same edge colour means
+        // different opacity depending on how strong the glyph beside it is.
+        let pixels = ItemImages27.removingBackground(
+            pixels: tile(background: (100, 140, 170), centre: (255, 255, 255), edge: (130, 140, 170)),
+            width: 5,
+            height: 5,
+            background: (100, 140, 170)
+        )
+        let a = Int(alpha(pixels, x: 1, y: 1))
+        #expect(a > 0 && a < 80)
+    }
+
+    @Test("A recoloured glyph keeps its shape")
+    func tintedKeepsShape() {
+        let keyed = ItemImages27.removingBackground(
+            pixels: tile(background: (100, 140, 170), centre: (255, 255, 255), edge: (178, 198, 213)),
+            width: 5,
+            height: 5,
+            background: (100, 140, 170)
+        )
+        let tinted = ItemImages27.tinted(pixels: keyed, colour: (10, 10, 10))
+        let centre = (2 * 5 + 2) * 4
+        let edge = (1 * 5 + 1) * 4
+        #expect(tinted[centre] == 10 && tinted[centre + 1] == 10 && tinted[centre + 2] == 10)
+        #expect(tinted[centre + 3] == 255)
+        #expect(tinted[edge + 3] == keyed[edge + 3])
+        #expect(tinted[edge + 3] > 0 && tinted[edge + 3] < 255)
+    }
+}
+
 @Suite("SectionLayoutEditing27")
 struct SectionLayoutEditing27Tests {
     let saved: [String: MacOS27Section] = ["ru.keepcoder.Telegram": .hidden, "com.caldis.Mos": .alwaysHidden]

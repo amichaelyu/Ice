@@ -24,6 +24,106 @@ enum ItemImages27 {
         )
     }
 
+    /// Below this share of the glyph's own contrast, a pixel is taken for bar, not glyph.
+    private static let noiseFloor = 0.06
+    /// A tile whose pixels all sit this close to the background holds no glyph.
+    private static let emptyTileDistance = 8.0
+
+    /// The background colour of a captured item, taken from the pixels along its edges.
+    ///
+    /// A capture of the menu bar carries the bar behind the glyph. The edges of an item's
+    /// rectangle are background almost everywhere, so the most common colour among them is
+    /// the background. Pixels are `RGBA`, eight bits each, row by row.
+    static func backgroundColor(pixels: [UInt8], width: Int, height: Int) -> (r: UInt8, g: UInt8, b: UInt8) {
+        var counts = [UInt32: Int]()
+        func count(x: Int, y: Int) {
+            let offset = (y * width + x) * 4
+            guard offset + 2 < pixels.count else {
+                return
+            }
+            let key = UInt32(pixels[offset]) << 16 | UInt32(pixels[offset + 1]) << 8 | UInt32(pixels[offset + 2])
+            counts[key, default: 0] += 1
+        }
+        for x in 0..<width {
+            count(x: x, y: 0)
+            count(x: x, y: height - 1)
+        }
+        for y in 0..<height {
+            count(x: 0, y: y)
+            count(x: width - 1, y: y)
+        }
+        guard let common = counts.max(by: { $0.value < $1.value })?.key else {
+            return (0, 0, 0)
+        }
+        return (UInt8((common >> 16) & 0xff), UInt8((common >> 8) & 0xff), UInt8(common & 0xff))
+    }
+
+    /// The same pixels with the background made transparent, so the glyph can be drawn on
+    /// any colour.
+    ///
+    /// The capture holds the glyph already blended into the bar, so a pixel's opacity is
+    /// how far it moved from the bar towards the glyph's own colour, not how far it lies
+    /// from the bar in absolute terms. Measuring absolutely washes out a glyph that is
+    /// close in colour to the bar; measuring as a share keeps it whole and still softens
+    /// the glyph's edges. The glyph's colour is taken to be that of the pixel furthest
+    /// from the background, and each pixel's colour is unblended from the background.
+    static func removingBackground(
+        pixels: [UInt8],
+        width: Int,
+        height: Int,
+        background: (r: UInt8, g: UInt8, b: UInt8)
+    ) -> [UInt8] {
+        let count = min(pixels.count, width * height * 4)
+        let backgroundChannels = [Double(background.r), Double(background.g), Double(background.b)]
+        func distance(at index: Int) -> Double {
+            (0..<3).reduce(0) { furthest, channel in
+                max(furthest, abs(Double(pixels[index + channel]) - backgroundChannels[channel]))
+            }
+        }
+
+        var glyphDistance = 0.0
+        for index in stride(from: 0, to: count, by: 4) {
+            glyphDistance = max(glyphDistance, distance(at: index))
+        }
+
+        var result = pixels
+        guard glyphDistance > emptyTileDistance else {
+            for index in stride(from: 0, to: count, by: 4) {
+                result[index + 3] = 0
+            }
+            return result
+        }
+
+        for index in stride(from: 0, to: count, by: 4) {
+            let opacity = min(1, distance(at: index) / glyphDistance)
+            guard opacity > noiseFloor else {
+                result[index + 3] = 0
+                continue
+            }
+            result[index + 3] = UInt8((opacity * 255).rounded())
+            for channel in 0..<3 {
+                let unblended = (Double(pixels[index + channel]) - backgroundChannels[channel] * (1 - opacity)) / opacity
+                result[index + channel] = UInt8(min(255, max(0, unblended.rounded())))
+            }
+        }
+        return result
+    }
+
+    /// The same pixels in one colour, keeping every pixel's opacity.
+    ///
+    /// MenuBarAgent draws a glyph light or dark to suit whatever sits behind the menu bar,
+    /// so a captured glyph can be the wrong colour for the Ice Bar's own flat background.
+    /// Recolouring gives the panel one readable look, the way a template image behaves.
+    static func tinted(pixels: [UInt8], colour: (r: UInt8, g: UInt8, b: UInt8)) -> [UInt8] {
+        var result = pixels
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            result[index] = colour.r
+            result[index + 1] = colour.g
+            result[index + 2] = colour.b
+        }
+        return result
+    }
+
     /// A stable file name for an item's image, safe to use on disk.
     static func fileName(forTag tag: String) -> String {
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
