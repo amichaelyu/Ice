@@ -152,7 +152,12 @@ for delay in delays {
     }
 }
 
-setDelay(400)
+// Leave the default unset, so Ice's own measured value decides again.
+let clear = Process()
+clear.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+clear.arguments = ["delete", "com.jordanbaird.Ice", "MacOS27ClickRestoreDelay"]
+try? clear.run()
+clear.waitUntilExit()
 print(failures == 0 ? "every delay opened the panel every time" : "\(failures) display/delay combinations lost a click")
 usleep(250_000)
 exit(failures == 0 ? 0 : 1)

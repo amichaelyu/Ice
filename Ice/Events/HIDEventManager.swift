@@ -453,11 +453,16 @@ extension HIDEventManager {
     /// a millisecond of the bar moving: the items slide back in, then out again. The panel's
     /// own window appears about 166 ms after the click (measured on macOS 27.0), so a lift
     /// that ends around then has the bar settling while the panel animates, which is what made
-    /// the animation stutter. The `MacOS27ClickRestoreDelay` default overrides it, in
-    /// milliseconds, for measuring.
+    /// the animation stutter.
+    ///
+    /// Measured on macOS 27.0 with `Scripts/macos27/clock-restore.swift`, on both displays: a
+    /// lift of 40 ms loses the click 6 times in 16, 60 ms once in 16, and 80, 100 and 120 ms
+    /// each opened the panel 16 times in 16. So the floor is around 60 ms, and 120 ms keeps
+    /// double that margin while still ending before the panel appears. The
+    /// `MacOS27ClickRestoreDelay` default overrides it, in milliseconds, for measuring.
     private static var clickRestoreDelay: Duration {
         let stored = Defaults.integer(forKey: .macOS27ClickRestoreDelay)
-        return .milliseconds(stored > 0 ? min(max(stored, 30), 2000) : 400)
+        return .milliseconds(stored > 0 ? min(max(stored, 30), 2000) : 120)
     }
 
 
