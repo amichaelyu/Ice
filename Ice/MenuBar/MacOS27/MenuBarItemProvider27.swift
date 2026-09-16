@@ -45,10 +45,16 @@ enum MenuBarItemProvider27 {
     nonisolated(unsafe) private static var entries = [CGWindowID: Entry]()
     nonisolated(unsafe) private static var lastOverflowButtonFrame: CGRect?
     nonisolated(unsafe) private static var lastSystemItemFrames = [CGRect]()
+    /// System item frames per display. MenuBarAgent describes the bars of both displays in its
+    /// windows, unlike other applications, whose items only have frames on the active one.
+    nonisolated(unsafe) private static var lastSystemFramesByDisplay = [CGDirectDisplayID: [CGRect]]()
     /// The leftmost item drawn on each display, from the last read while that display's
     /// menu bar was active. Hover hit-testing needs it for the display that is not active,
     /// where Accessibility reports no frames at all.
     nonisolated(unsafe) private static var lastLeftEdges = [CGDirectDisplayID: CGFloat]()
+    /// Processes whose items are concealed. Accessibility keeps reporting their frames where
+    /// they were last drawn, so without this they would pass for drawn items.
+    nonisolated(unsafe) private static var concealedPIDs = Set<pid_t>()
     /// Only read and written on `queue`.
     nonisolated(unsafe) private static var scanSchedule = AccessibilityScanSchedule27()
 
@@ -90,10 +96,24 @@ enum MenuBarItemProvider27 {
         }
     }
 
+    /// Tells the provider which processes are concealed right now.
+    static func setConcealedPIDs(_ pids: Set<pid_t>) {
+        lock.withLock { concealedPIDs = pids }
+    }
+
     /// The leftmost item drawn on the given display, from the last read while its menu bar
     /// was active.
     static func leftEdge(for displayID: CGDirectDisplayID) -> CGFloat? {
         lock.withLock { lastLeftEdges[displayID] }
+    }
+
+    /// Frames of the system items drawn on the given display, from the last read.
+    ///
+    /// A click on the clock of the display whose menu bar is not active has to be recognised
+    /// too, or it reaches MenuBarAgent while the assertion still stands and is ignored — which
+    /// is why that clock used to need two or three clicks.
+    static func systemItemFrames(for displayID: CGDirectDisplayID) -> [CGRect] {
+        lock.withLock { lastSystemFramesByDisplay[displayID] ?? [] }
     }
 
     /// Frame of the system overflow button ("<<" / ">>"), from the last read.
@@ -185,6 +205,23 @@ enum MenuBarItemProvider27 {
                 ))
             }
             if bundleID == menuBarAgentBundleID {
+                var perDisplay = [CGDirectDisplayID: [CGRect]]()
+                for window in elements(application, kAXWindowsAttribute) ?? [] {
+                    for child in elements(window, kAXChildrenAttribute) ?? [] {
+                        let hosted = elements(child, kAXChildrenAttribute)?.first ?? child
+                        guard let itemFrame = frame(of: hosted) else {
+                            continue
+                        }
+                        var display = CGDirectDisplayID(0)
+                        var matches: UInt32 = 0
+                        CGGetDisplaysWithPoint(CGPoint(x: itemFrame.midX, y: itemFrame.midY), 1, &display, &matches)
+                        guard matches > 0 else {
+                            continue
+                        }
+                        perDisplay[display, default: []].append(itemFrame)
+                    }
+                }
+                lock.withLock { lastSystemFramesByDisplay = perDisplay }
                 let systemFrames = rawItems
                     .filter { $0.bundleID == menuBarAgentBundleID && (activeDisplayBounds?.intersects($0.frame) ?? true) }
                     .map(\.frame)
@@ -218,12 +255,16 @@ enum MenuBarItemProvider27 {
         // Where the items' own run of the bar begins, for hover hit-testing. Only what is
         // drawn counts: a concealed item keeps a stale frame further left, which would make
         // Ice treat the freed part of the bar as occupied.
+        let concealed = lock.withLock { concealedPIDs }
         let leftEdge = items
             .filter { item in
+                guard !concealed.contains(item.ownerPID) else {
+                    return false
+                }
                 // Ice's own items are collapsed to nothing on macOS 27 and report a frame at
                 // the origin, which would drag the edge to the left of the whole bar and make
                 // every spot count as occupied, so hovering would never reveal anything again.
-                item.isOnScreen && item.ownerPID != ownPID && !item.isControlItem && item.bounds.width > 4
+                return item.isOnScreen && item.ownerPID != ownPID && !item.isControlItem && item.bounds.width > 4
             }
             .map(\.bounds.minX)
             .min()

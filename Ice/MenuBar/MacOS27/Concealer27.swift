@@ -95,6 +95,7 @@ final class Concealer27 {
         )
         let concealed = ConcealmentPlanner27.effectivelyConcealed(sets: target)
         isConcealing = !target.isEmpty
+        defer { MenuBarItemProvider27.setConcealedPIDs(concealedPIDs) }
         concealedPIDs = Set(applications.compactMap { application in
             guard let bundleID = application.bundleIdentifier, concealed.contains(bundleID) else {
                 return nil

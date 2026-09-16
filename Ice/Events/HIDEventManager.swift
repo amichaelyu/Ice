@@ -27,16 +27,7 @@ final class HIDEventManager: ObservableObject {
     /// The last empty menu bar spot hovered on each display (see `ItemClicker27`).
     private var lastEmptyMenuBarPoints = [CGDirectDisplayID: CGPoint]()
 
-    /// When the picture of the bar behind the cover was last refreshed.
-    private var lastStripRefresh: ContinuousClock.Instant?
 
-    /// Covers the bar while the concealment is lifted for a click (macOS 27).
-    private lazy var maskPanel: NSPanel? = {
-        if #available(macOS 27.0, *) {
-            return MenuBarMaskPanel27()
-        }
-        return nil
-    }()
 
     /// A Boolean value that indicates whether the manager is enabled.
     private var isEnabled = false {
@@ -109,9 +100,6 @@ final class HIDEventManager: ObservableObject {
     ) { [weak self] _, event in
         if let self, isEnabled, let appState, let screen = bestScreen(appState: appState) {
             handleShowOnHover(appState: appState, screen: screen)
-            if #available(macOS 27.0, *) {
-                refreshStripIfNeeded(appState: appState, screen: screen)
-            }
         }
         return event
     }
@@ -401,9 +389,13 @@ extension HIDEventManager {
             return event
         }
         let concealer = appState.concealer27
+        // The frames of the display the click landed on, so the clock of the display whose bar
+        // is not active is recognised as well.
+        let clickedDisplay = NSScreen.screens.first { CGDisplayBounds($0.displayID).contains(event.location) }?.displayID
+        let framesOnDisplay = clickedDisplay.map { MenuBarItemProvider27.systemItemFrames(for: $0) } ?? []
         guard ClockBridgeZone27.shouldBridge(
             click: event.location,
-            systemItemFrames: MenuBarItemProvider27.systemItemFrames(),
+            systemItemFrames: framesOnDisplay.isEmpty ? MenuBarItemProvider27.systemItemFrames() : framesOnDisplay,
             isConcealing: concealer.isConcealing
         ) else {
             return event
@@ -432,56 +424,13 @@ extension HIDEventManager {
             // a click that arrives while the assertion still stands, which is why the clock
             // sometimes did nothing and opened on the second try. Nothing else is done before
             // the replay, so the click is as quick as the release allows.
-            self.coverBarForLift(at: location, appState: appState)
             await concealer.suspendReleased(for: .milliseconds(400))
             Self.replayClick(at: location)
-            // The concealment is back when the lift runs out; the cover goes just after it.
-            try? await Task.sleep(for: .milliseconds(500))
-            (self.maskPanel as? MenuBarMaskPanel27)?.hide()
         }
         return nil
     }
 
-    /// Keeps a recent picture of the bar, which the cover during a lift is cut from. The full
-    /// capture runs only when the item cache changes, which is far too seldom for that.
-    @available(macOS 27.0, *)
-    private func refreshStripIfNeeded(appState: AppState, screen: NSScreen) {
-        guard
-            isMouseInsideMenuBar(appState: appState, screen: screen),
-            lastStripRefresh.map({ $0.duration(to: .now) > .seconds(1) }) ?? true
-        else {
-            return
-        }
-        lastStripRefresh = .now
-        Task {
-            await appState.itemImageStore27.refreshStrip()
-        }
-    }
 
-    /// Covers the stretch of bar where the hidden items would appear during a lift.
-    @available(macOS 27.0, *)
-    private func coverBarForLift(at location: CGPoint, appState: AppState) {
-        guard
-            let panel = maskPanel as? MenuBarMaskPanel27,
-            let screen = NSScreen.screens.first(where: { CGDisplayBounds($0.displayID).contains(location) }),
-            let strip = appState.itemImageStore27.lastStrip,
-            // A capture older than this may show a stale wallpaper behind the translucent bar.
-            strip.taken.duration(to: .now) < .seconds(5),
-            strip.frame.contains(location),
-            let edge = MenuBarItemProvider27.leftEdge(for: screen.displayID)
-        else {
-            return
-        }
-        // Cover only where the hidden items surface: their own stretch of the bar, left of the
-        // leftmost item still drawn. Covering further left would freeze the application menus.
-        let displayBounds = CGDisplayBounds(screen.displayID)
-        let concealedLeft = appState.itemManager.itemCache.managedItems
-            .filter { !$0.isOnScreen && displayBounds.contains(CGPoint(x: $0.bounds.midX, y: $0.bounds.midY)) }
-            .map(\.bounds.minX)
-            .min()
-        let from = (concealedLeft.map { $0 - 8 } ?? edge - 500)
-        panel.cover(strip: strip.image, stripFrame: strip.frame, scale: strip.scale, from: from, upTo: edge, screen: screen)
-    }
 
     /// The window numbers currently on screen.
     private static func windowNumbers() -> Set<Int> {
