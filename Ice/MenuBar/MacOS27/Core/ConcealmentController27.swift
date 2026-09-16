@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import OSLog
 
 /// A live assessment-mode assertion.
 protocol ConcealmentToken27: AnyObject {}
@@ -40,6 +41,7 @@ final class ConcealmentController27 {
     }
 
     private let backend: ConcealmentBackend27
+    private let logger = Logger(subsystem: "com.jordanbaird.Ice", category: "ConcealmentController27")
     private var live = [Live]()
 
     /// Whether any assertion is currently live.
@@ -56,6 +58,14 @@ final class ConcealmentController27 {
     /// If an activation fails, the assertions activated during this call are
     /// released, the previous ones stay live, and the error is rethrown.
     func apply(target: [Set<String>], running: Set<String>) async throws {
+        // Timed: every apply has MenuBarAgent lay the bar out again, and that animation is
+        // what a stutter of the bar would be made of.
+        let started = ProcessInfo.processInfo.systemUptime
+        logger.debug("Concealment apply: started, \(target.count, privacy: .public) sets")
+        defer {
+            let milliseconds = (ProcessInfo.processInfo.systemUptime - started) * 1000
+            logger.debug("Concealment apply: took \(milliseconds, privacy: .public) ms")
+        }
         let desired = target.map { concealed in
             Spec(concealed: concealed, allowlist: ConcealmentPlanner27.allowlist(concealing: concealed, running: running))
         }
@@ -86,6 +96,14 @@ final class ConcealmentController27 {
 
     /// Releases every live assertion, which restores all items.
     func releaseAll() {
+        // Timed like `apply`: releasing is the other half of the bar's movement, and it is
+        // what a bridged click does before replaying itself.
+        let started = ProcessInfo.processInfo.systemUptime
+        logger.debug("Concealment release: started, \(self.live.count, privacy: .public) live")
+        defer {
+            let milliseconds = (ProcessInfo.processInfo.systemUptime - started) * 1000
+            logger.debug("Concealment release: took \(milliseconds, privacy: .public) ms")
+        }
         for entry in live {
             backend.invalidate(entry.token)
         }

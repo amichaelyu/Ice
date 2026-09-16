@@ -62,13 +62,45 @@ enum MenuBarItemProvider27 {
     nonisolated(unsafe) private static var scanSchedule = AccessibilityScanSchedule27()
 
     /// Returns the items on the active menu bar, ordered left to right.
+    ///
+    /// A caller that asks while another read is under way, or in the moment after one
+    /// finished, is answered from that read. Ice ran one Accessibility sweep per caller
+    /// before, and they arrive in bursts: revealing the hidden items set six of them going
+    /// in little over a second (measured 2026-09-16), each asking every running process,
+    /// while MenuBarAgent was animating the bar. The window is short on purpose — the
+    /// before-and-after reads that decide which items sat still for a capture are further
+    /// apart than this, so they still see the bar twice.
     static func items() async -> [MenuBarItem] {
         await withCheckedContinuation { continuation in
             queue.async {
-                continuation.resume(returning: readItems())
+                let fresh: [MenuBarItem]? = lock.withLock {
+                    guard
+                        let items = lastItems,
+                        ProcessInfo.processInfo.systemUptime - lastReadAt < freshInterval
+                    else {
+                        return nil
+                    }
+                    return items
+                }
+                if let fresh {
+                    logger.debug("Item scan: answered from the read just finished")
+                    continuation.resume(returning: fresh)
+                    return
+                }
+                let items = readItems()
+                lock.withLock {
+                    lastItems = items
+                    lastReadAt = ProcessInfo.processInfo.systemUptime
+                }
+                continuation.resume(returning: items)
             }
         }
     }
+
+    /// How long a finished read stands in for the next one.
+    private static let freshInterval: TimeInterval = 0.12
+    nonisolated(unsafe) private static var lastItems: [MenuBarItem]?
+    nonisolated(unsafe) private static var lastReadAt: TimeInterval = 0
 
     /// Returns the current frame of the item with the given synthetic identifier.
     ///
@@ -133,6 +165,14 @@ enum MenuBarItemProvider27 {
     // MARK: Reading
 
     private static func readItems(retryIfMenuBarMoves: Bool = true) -> [MenuBarItem] {
+        // Timed: a scan that runs while MenuBarAgent is animating the bar is a suspect for
+        // the stutter of that animation.
+        let started = ProcessInfo.processInfo.systemUptime
+        logger.debug("Item scan: started")
+        defer {
+            let milliseconds = (ProcessInfo.processInfo.systemUptime - started) * 1000
+            logger.debug("Item scan: took \(milliseconds, privacy: .public) ms")
+        }
         let ownPID = ProcessInfo.processInfo.processIdentifier
         var rawItems = [RawItem]()
         var chevronFrame: CGRect?

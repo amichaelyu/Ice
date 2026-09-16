@@ -48,6 +48,18 @@ final class ItemImageStore27 {
     private var loaded = [String: CapturedImage]()
     private var photoSchedule = PhotoSchedule27()
 
+    /// The capture under way, so captures follow one another instead of overlapping.
+    private var captureTask: Task<Void, Never>?
+
+    /// Counts the captures started, so only the last one clears ``captureTask``.
+    private var captureGeneration = 0
+
+    /// When the last capture finished, so a fresh one is not taken of an unchanged bar.
+    private var lastCaptureFinishedAt: ContinuousClock.Instant?
+
+    /// How long the images just captured stand before the bar is worth capturing again.
+    private static let captureFreshness = Duration.milliseconds(700)
+
     private var appearanceObserver: NSObjectProtocol?
 
     init() {
@@ -105,7 +117,48 @@ final class ItemImageStore27 {
     }
 
     /// Captures the active menu bar and stores the images of the items drawn on it.
-    func captureActiveMenuBar(appState: AppState) async {
+    /// Captures follow one another rather than overlapping: a single reveal set four of them
+    /// going at once, 260–290 ms each (measured 2026-09-16), all asking the display server
+    /// for the same strip while MenuBarAgent was animating the bar.
+    func captureActiveMenuBar(appState: AppState, force: Bool = false) async {
+        if !force {
+            // A capture already under way photographs the same bar this caller wants.
+            if let captureTask {
+                await captureTask.value
+                return
+            }
+            // And one that has just been taken still describes it.
+            if let last = lastCaptureFinishedAt, ContinuousClock.now - last < Self.captureFreshness {
+                return
+            }
+        }
+        captureGeneration += 1
+        let generation = captureGeneration
+        let previous = captureTask
+        let task = Task { [weak self] in
+            await previous?.value
+            await self?.performCapture(appState: appState)
+        }
+        captureTask = task
+        await task.value
+        if captureGeneration == generation {
+            captureTask = nil
+        }
+    }
+
+    private func performCapture(appState: AppState) async {
+        // The bar animates for about 250 ms after concealment changes. A capture taken then
+        // photographs items in mid-slide, which are thrown away as unsettled anyway, and adds
+        // its own load at the moment the animation can least afford it.
+        if let remaining = appState.concealer27.timeUntilSettled() {
+            try? await Task.sleep(for: remaining)
+        }
+        let started = ProcessInfo.processInfo.systemUptime
+        logger.debug("Menu bar capture: started")
+        defer {
+            lastCaptureFinishedAt = .now
+            logger.debug("Menu bar capture: took \((ProcessInfo.processInfo.systemUptime - started) * 1000, privacy: .public) ms")
+        }
         guard
             ScreenCapture.cachedCheckPermissions(),
             let displayID = Bridging.getActiveMenuBarDisplayID(),
@@ -167,7 +220,9 @@ final class ItemImageStore27 {
         }
         // A shown item is drawn 0.4–0.6 s after its application is allowed (measured).
         try? await Task.sleep(for: .milliseconds(600))
-        await captureActiveMenuBar(appState: appState)
+        // Forced: this capture is the point of having shown the applications at all, so it
+        // must not be answered by one taken before they appeared.
+        await captureActiveMenuBar(appState: appState, force: true)
         for bundleID in bundleIDs {
             appState.concealer27.endTemporaryShow(bundleID: bundleID)
         }

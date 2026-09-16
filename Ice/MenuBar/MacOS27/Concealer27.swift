@@ -24,6 +24,13 @@ final class Concealer27 {
     private var applyTask: Task<Void, Never>?
     private var suspendedUntil: ContinuousClock.Instant?
 
+    /// When concealment last changed, which is when the bar last started moving.
+    private var lastChangeAt = ContinuousClock.now
+
+    /// How long MenuBarAgent animates the bar after items are concealed or released
+    /// (measured on macOS 27.0: about 250 ms, with a margin here).
+    private static let settleAfterChange = Duration.milliseconds(400)
+
     /// Applications shown for a moment, with the number of callers showing each.
     private var temporarilyShown = [String: Int]()
     private var cancellables = Set<AnyCancellable>()
@@ -102,6 +109,7 @@ final class Concealer27 {
             }
             return application.processIdentifier
         })
+        lastChangeAt = .now
         let previous = applyTask
         let task = Task { [controller, logger] in
             await previous?.value
@@ -124,6 +132,7 @@ final class Concealer27 {
 
     /// Releases every assertion for a moment, so a click can reach a system item.
     func suspend(for duration: Duration) {
+        lastChangeAt = .now
         suspendedUntil = .now + duration
         isConcealing = false
         concealedPIDs.removeAll()
@@ -146,6 +155,7 @@ final class Concealer27 {
     /// still live, and MenuBarAgent ignores those — which is why a click on the clock sometimes
     /// did nothing and worked on the second try.
     func suspendReleased(for duration: Duration) async {
+        lastChangeAt = .now
         suspendedUntil = .now + duration
         isConcealing = false
         concealedPIDs.removeAll()
@@ -170,6 +180,18 @@ final class Concealer27 {
         }
         suspendedUntil = nil
         update()
+    }
+
+    /// How much of the bar's movement is still to come after the last concealment change.
+    ///
+    /// Work that runs while MenuBarAgent animates the bar lands on top of that animation:
+    /// revealing the hidden items set off four overlapping display captures of 260–290 ms
+    /// each and six Accessibility sweeps in little over a second (measured 2026-09-16), and
+    /// the animation stuttered. Heavy work waits this out.
+    func timeUntilSettled() -> Duration? {
+        let settleAt = lastChangeAt + Self.settleAfterChange
+        let now = ContinuousClock.now
+        return now < settleAt ? settleAt - now : nil
     }
 
     /// Shows an application for a moment, to click or photograph its item.
