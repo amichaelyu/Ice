@@ -28,6 +28,8 @@ enum ItemImages27 {
     private static let noiseFloor = 0.06
     /// A tile whose pixels all sit this close to the background holds no glyph.
     private static let emptyTileDistance = 8.0
+    /// Further than this from the tile's own colour, a column's edge is glyph, not bar.
+    private static let maximumColumnDrift = 40.0
 
     /// The background colour of a captured item, taken from the pixels along its edges.
     ///
@@ -75,9 +77,56 @@ enum ItemImages27 {
     ) -> [UInt8] {
         let count = min(pixels.count, width * height * 4)
         let backgroundChannels = [Double(background.r), Double(background.g), Double(background.b)]
+
+        // The bar is translucent, so the wallpaper behind it drifts its colour from one
+        // side of an item to the other, and the bar also shades from its top row to its
+        // bottom (measured on macOS 27.0: 11 to 18 between them). One colour for the whole
+        // tile leaves a haze, which shows as a pale box behind the glyph. So each column
+        // takes a colour from above the glyph and one from below it, and every pixel is
+        // measured against the blend of the two at its own row. A column the glyph covers
+        // edge to edge keeps the tile's colour instead of erasing itself.
+        func edgeBackground(column: Int, rows: [Int]) -> (colour: [Double], row: Int) {
+            var closest = backgroundChannels
+            var closestRow = rows.first ?? 0
+            var closestDrift = Double.infinity
+            for y in rows {
+                let index = (y * width + column) * 4
+                guard index + 2 < count else {
+                    continue
+                }
+                let candidate = (0..<3).map { Double(pixels[index + $0]) }
+                let drift = (0..<3).reduce(0.0) { max($0, abs(candidate[$1] - backgroundChannels[$1])) }
+                if drift < closestDrift {
+                    closestDrift = drift
+                    closest = candidate
+                    closestRow = y
+                }
+            }
+            return closestDrift <= maximumColumnDrift ? (closest, closestRow) : (backgroundChannels, closestRow)
+        }
+
+        let topRows = [0, 1].filter { $0 < height }
+        let bottomRows = [height - 2, height - 1].filter { $0 >= 0 }
+        var topBackgrounds = [(colour: [Double], row: Int)]()
+        var bottomBackgrounds = [(colour: [Double], row: Int)]()
+        for x in 0..<width {
+            topBackgrounds.append(edgeBackground(column: x, rows: topRows))
+            bottomBackgrounds.append(edgeBackground(column: x, rows: bottomRows))
+        }
+
+        func blendedBackground(at index: Int) -> [Double] {
+            let pixel = index / 4
+            let top = topBackgrounds[pixel % width]
+            let bottom = bottomBackgrounds[pixel % width]
+            let span = Double(bottom.row - top.row)
+            let share = span > 0 ? min(1, max(0, Double(pixel / width - top.row) / span)) : 0
+            return (0..<3).map { top.colour[$0] + (bottom.colour[$0] - top.colour[$0]) * share }
+        }
+
         func distance(at index: Int) -> Double {
-            (0..<3).reduce(0) { furthest, channel in
-                max(furthest, abs(Double(pixels[index + channel]) - backgroundChannels[channel]))
+            let local = blendedBackground(at: index)
+            return (0..<3).reduce(0) { furthest, channel in
+                max(furthest, abs(Double(pixels[index + channel]) - local[channel]))
             }
         }
 
@@ -101,12 +150,44 @@ enum ItemImages27 {
                 continue
             }
             result[index + 3] = UInt8((opacity * 255).rounded())
+            let local = blendedBackground(at: index)
             for channel in 0..<3 {
-                let unblended = (Double(pixels[index + channel]) - backgroundChannels[channel] * (1 - opacity)) / opacity
+                let unblended = (Double(pixels[index + channel]) - local[channel] * (1 - opacity)) / opacity
                 result[index + channel] = UInt8(min(255, max(0, unblended.rounded())))
             }
         }
         return result
+    }
+
+    /// Anything fainter than this is a trace of a neighbouring item, not the glyph.
+    private static let visibleAlpha: UInt8 = 16
+
+    /// The columns the glyph itself covers, or `nil` when the tile holds nothing.
+    ///
+    /// MenuBarAgent pads items unevenly, so a captured tile has anywhere from no margin to
+    /// a dozen points of it (measured on macOS 27.0). Drawing the tiles side by side then
+    /// spaces the glyphs unevenly, which is why the Ice Bar and the layout window trim each
+    /// tile to its glyph and add a margin of their own.
+    static func glyphColumns(pixels: [UInt8], width: Int, height: Int) -> ClosedRange<Int>? {
+        var first: Int?
+        var last: Int?
+        for x in 0..<width {
+            let covered = (0..<height).contains { y in
+                let index = (y * width + x) * 4 + 3
+                return index < pixels.count && pixels[index] > visibleAlpha
+            }
+            guard covered else {
+                continue
+            }
+            if first == nil {
+                first = x
+            }
+            last = x
+        }
+        guard let first, let last else {
+            return nil
+        }
+        return first...last
     }
 
     /// The same pixels in one colour, keeping every pixel's opacity.

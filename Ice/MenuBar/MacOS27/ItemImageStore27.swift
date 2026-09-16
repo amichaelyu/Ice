@@ -28,8 +28,13 @@ final class ItemImageStore27 {
     }
 
     /// Bumped when stored images change shape. Version 1 kept the menu bar behind the
-    /// glyph; version 2 cut it away but left the glyph in the colour it was captured in.
-    private static let storeVersion = "3"
+    /// glyph; version 2 cut it away but left the glyph in the colour it was captured in;
+    /// version 3 kept the bar's own uneven padding around it; versions 4 and 5 left a haze
+    /// of the bar over the tile, which showed as a pale box behind the glyph.
+    private static let storeVersion = "6"
+
+    /// The margin left on each side of a glyph, in points, so items are spaced evenly.
+    private static let glyphMargin: CGFloat = 4
 
     private let logger = Logger(category: "ItemImageStore27")
     private let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -116,7 +121,7 @@ final class ItemImageStore27 {
             guard
                 let rect = ItemImages27.cropRect(itemFrame: item.bounds, stripFrame: stripFrame, scale: scale),
                 let image = strip.cropping(to: rect),
-                let glyph = withoutBackground(image)
+                let glyph = withoutBackground(image, scale: scale)
             else {
                 continue
             }
@@ -182,8 +187,9 @@ final class ItemImageStore27 {
         return isDark ? (255, 255, 255) : (0, 0, 0)
     }
 
-    /// The image with the menu bar behind the glyph made transparent.
-    private func withoutBackground(_ image: CGImage) -> CGImage? {
+    /// The image with the menu bar behind the glyph made transparent, the glyph recoloured
+    /// for the panel, and the bar's own padding replaced by an even margin.
+    private func withoutBackground(_ image: CGImage, scale: CGFloat) -> CGImage? {
         let width = image.width
         let height = image.height
         let count = width * height * 4
@@ -219,7 +225,17 @@ final class ItemImageStore27 {
         keyed.withUnsafeMutableBytes { buffer in
             bytes.update(from: buffer.bindMemory(to: UInt8.self).baseAddress!, count: count)
         }
-        return context.makeImage()
+        guard
+            let keyedImage = context.makeImage(),
+            let columns = ItemImages27.glyphColumns(pixels: keyed, width: width, height: height)
+        else {
+            // Nothing was drawn in the item's rectangle; there is no image to keep.
+            return nil
+        }
+        let margin = Int((Self.glyphMargin * scale).rounded())
+        let minX = max(0, columns.lowerBound - margin)
+        let maxX = min(width, columns.upperBound + 1 + margin)
+        return keyedImage.cropping(to: CGRect(x: minX, y: 0, width: maxX - minX, height: height)) ?? keyedImage
     }
 
     private func store(_ image: CGImage, scale: CGFloat, key: String) {

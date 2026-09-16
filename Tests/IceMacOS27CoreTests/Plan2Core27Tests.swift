@@ -208,6 +208,64 @@ struct ItemImageBackground27Tests {
         #expect(a > 0 && a < 80)
     }
 
+    @Test("A bar whose colour drifts across the item still disappears completely")
+    func driftingBackgroundRemoved() {
+        // The menu bar is translucent, so the wallpaper behind it makes its colour drift
+        // from one side of an item to the other. Subtracting a single colour leaves a
+        // haze over the whole tile, which shows as a pale box behind the glyph.
+        let width = 7
+        let height = 6
+        var pixels = [UInt8]()
+        for y in 0..<height {
+            for x in 0..<width {
+                let drift = UInt8(5 * x)
+                var colour: (r: UInt8, g: UInt8, b: UInt8) = (100 + drift, 140 + drift, 170 + drift)
+                if x == 3, (2...3).contains(y) {
+                    colour = (20, 20, 20)
+                }
+                pixels += [colour.r, colour.g, colour.b, 255]
+            }
+        }
+        let background = ItemImages27.backgroundColor(pixels: pixels, width: width, height: height)
+        let result = ItemImages27.removingBackground(pixels: pixels, width: width, height: height, background: background)
+        for y in 0..<height {
+            for x in 0..<width where !(x == 3 && (2...3).contains(y)) {
+                #expect(result[(y * width + x) * 4 + 3] == 0)
+            }
+        }
+        #expect(result[(2 * width + 3) * 4 + 3] == 255)
+    }
+
+    @Test("A bar that shades from its top to its bottom also disappears completely")
+    func shadedBackgroundRemoved() {
+        // Measured on macOS 27.0: the bar's colour drifts by 11–18 between its top and
+        // bottom rows, so a background taken from one row leaves a haze on the other.
+        let width = 6
+        let height = 8
+        var pixels = [UInt8]()
+        for y in 0..<height {
+            for x in 0..<width {
+                let shade = UInt8(2 * y)
+                var colour: (r: UInt8, g: UInt8, b: UInt8) = (100 + shade, 140 + shade, 170 + shade)
+                if x == 3, (3...4).contains(y) {
+                    colour = (20, 20, 20)
+                }
+                pixels += [colour.r, colour.g, colour.b, 255]
+            }
+        }
+        let background = ItemImages27.backgroundColor(pixels: pixels, width: width, height: height)
+        let result = ItemImages27.removingBackground(pixels: pixels, width: width, height: height, background: background)
+        for y in 0..<height {
+            for x in 0..<width where !(x == 3 && (3...4).contains(y)) {
+                #expect(result[(y * width + x) * 4 + 3] == 0)
+            }
+        }
+        // The shading makes the lower of the two glyph pixels the furthest from the bar, so
+        // it is the one that sets full opacity; the other is a hair behind it.
+        #expect(result[(4 * width + 3) * 4 + 3] == 255)
+        #expect(result[(3 * width + 3) * 4 + 3] >= 250)
+    }
+
     @Test("A recoloured glyph keeps its shape")
     func tintedKeepsShape() {
         let keyed = ItemImages27.removingBackground(
@@ -223,6 +281,40 @@ struct ItemImageBackground27Tests {
         #expect(tinted[centre + 3] == 255)
         #expect(tinted[edge + 3] == keyed[edge + 3])
         #expect(tinted[edge + 3] > 0 && tinted[edge + 3] < 255)
+    }
+}
+
+@Suite("Item image trimming")
+struct ItemImageTrimming27Tests {
+    /// A tile `width` wide whose pixels are opaque only in the given columns.
+    func tile(width: Int, opaque: Range<Int>) -> [UInt8] {
+        var pixels = [UInt8]()
+        for _ in 0..<4 {
+            for x in 0..<width {
+                pixels += [0, 0, 0, opaque.contains(x) ? 255 : 0]
+            }
+        }
+        return pixels
+    }
+
+    @Test("The glyph's own columns are found, whatever the margins around it")
+    func glyphColumns() {
+        let columns = ItemImages27.glyphColumns(pixels: tile(width: 10, opaque: 3..<7), width: 10, height: 4)
+        #expect(columns?.lowerBound == 3)
+        #expect(columns?.upperBound == 6)
+    }
+
+    @Test("A tile with nothing drawn in it has no columns")
+    func emptyTile() {
+        #expect(ItemImages27.glyphColumns(pixels: tile(width: 10, opaque: 0..<0), width: 10, height: 4) == nil)
+    }
+
+    @Test("A nearly transparent edge does not count as the glyph")
+    func faintEdgeIgnored() {
+        var pixels = tile(width: 10, opaque: 4..<6)
+        pixels[(0 * 10 + 1) * 4 + 3] = 8 // a trace of the neighbouring item
+        let columns = ItemImages27.glyphColumns(pixels: pixels, width: 10, height: 4)
+        #expect(columns?.lowerBound == 4)
     }
 }
 
