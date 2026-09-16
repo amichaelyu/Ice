@@ -30,11 +30,15 @@ final class ItemImageStore27 {
     /// Bumped when stored images change shape. Version 1 kept the menu bar behind the
     /// glyph; version 2 cut it away but left the glyph in the colour it was captured in;
     /// version 3 kept the bar's own uneven padding around it; versions 4 and 5 left a haze
-    /// of the bar over the tile, which showed as a pale box behind the glyph.
-    private static let storeVersion = "6"
+    /// of the bar over the tile, which showed as a pale box behind the glyph; version 6
+    /// spaced the glyphs more tightly than the menu bar does; version 7 could not give a
+    /// glyph its full margin when the capture ended right at the glyph's edge.
+    private static let storeVersion = "8"
 
-    /// The margin left on each side of a glyph, in points, so items are spaced evenly.
-    private static let glyphMargin: CGFloat = 4
+    /// The margin left on each side of a glyph, in points, so items are spaced evenly and
+    /// with the menu bar's own rhythm: its glyphs sit 18 to 29 points apart, median 22
+    /// (measured on macOS 27.0), which is twice this margin.
+    private static let glyphMargin: CGFloat = 11
 
     private let logger = Logger(category: "ItemImageStore27")
     private let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -232,10 +236,27 @@ final class ItemImageStore27 {
             // Nothing was drawn in the item's rectangle; there is no image to keep.
             return nil
         }
+        // The glyph is drawn into a fresh tile rather than cropped with margins, because a
+        // capture often ends right at the glyph's edge and then cropping has no room left.
         let margin = Int((Self.glyphMargin * scale).rounded())
-        let minX = max(0, columns.lowerBound - margin)
-        let maxX = min(width, columns.upperBound + 1 + margin)
-        return keyedImage.cropping(to: CGRect(x: minX, y: 0, width: maxX - minX, height: height)) ?? keyedImage
+        let glyphWidth = columns.upperBound - columns.lowerBound + 1
+        let paddedWidth = glyphWidth + margin * 2
+        guard
+            let glyph = keyedImage.cropping(to: CGRect(x: columns.lowerBound, y: 0, width: glyphWidth, height: height)),
+            let padded = CGContext(
+                data: nil,
+                width: paddedWidth,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: paddedWidth * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: bitmapInfo
+            )
+        else {
+            return keyedImage
+        }
+        padded.draw(glyph, in: CGRect(x: margin, y: 0, width: glyphWidth, height: height))
+        return padded.makeImage() ?? keyedImage
     }
 
     private func store(_ image: CGImage, scale: CGFloat, key: String) {
