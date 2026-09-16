@@ -47,6 +47,10 @@ final class ItemImageStore27 {
     private var index = [String: IndexEntry]()
     private var loaded = [String: CapturedImage]()
     private var photoSchedule = PhotoSchedule27()
+
+    /// The last capture of the active menu bar, with the moment it was taken. A click on a
+    /// system item covers the bar with it while the concealment is lifted.
+    private(set) var lastStrip: (image: CGImage, frame: CGRect, scale: CGFloat, taken: ContinuousClock.Instant)?
     private var appearanceObserver: NSObjectProtocol?
 
     init() {
@@ -121,6 +125,7 @@ final class ItemImageStore27 {
             return
         }
         let (strip, scale) = captured
+        lastStrip = (strip, stripFrame, scale, .now)
         // Only items that sat still through the capture are stored. See `settledTags`.
         func frames(_ items: [MenuBarItem]) -> [String: CGRect] {
             Dictionary(items.map { ($0.tag.description, $0.bounds) }, uniquingKeysWith: { first, _ in first })
@@ -145,6 +150,27 @@ final class ItemImageStore27 {
         }
         writeIndex()
         logger.debug("Stored \(stored, privacy: .public) item images from display \(displayID, privacy: .public), skipped \(skipped, privacy: .public) that moved")
+    }
+
+    /// Captures the active menu bar without storing any item images.
+    ///
+    /// The cover shown while concealment is lifted has to be a fresh picture of the bar, and
+    /// the full capture runs only when the item cache changes, which can be many seconds apart.
+    func refreshStrip() async {
+        guard
+            ScreenCapture.cachedCheckPermissions(),
+            let displayID = Bridging.getActiveMenuBarDisplayID(),
+            let screen = NSScreen.screens.first(where: { $0.displayID == displayID })
+        else {
+            return
+        }
+        let displayBounds = CGDisplayBounds(displayID)
+        let barHeight = max(screen.frame.maxY - screen.visibleFrame.maxY, 22)
+        let stripFrame = CGRect(x: displayBounds.minX, y: displayBounds.minY, width: displayBounds.width, height: barHeight)
+        guard let (strip, scale) = await captureStrip(displayID: displayID, size: stripFrame.size) else {
+            return
+        }
+        lastStrip = (strip, stripFrame, scale, .now)
     }
 
     /// Shows the applications of items that have no image for a moment, and captures them.

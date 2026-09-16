@@ -27,6 +27,17 @@ final class HIDEventManager: ObservableObject {
     /// The last empty menu bar spot hovered on each display (see `ItemClicker27`).
     private var lastEmptyMenuBarPoints = [CGDirectDisplayID: CGPoint]()
 
+    /// When the picture of the bar behind the cover was last refreshed.
+    private var lastStripRefresh: ContinuousClock.Instant?
+
+    /// Covers the bar while the concealment is lifted for a click (macOS 27).
+    private lazy var maskPanel: NSPanel? = {
+        if #available(macOS 27.0, *) {
+            return MenuBarMaskPanel27()
+        }
+        return nil
+    }()
+
     /// A Boolean value that indicates whether the manager is enabled.
     private var isEnabled = false {
         didSet {
@@ -98,6 +109,9 @@ final class HIDEventManager: ObservableObject {
     ) { [weak self] _, event in
         if let self, isEnabled, let appState, let screen = bestScreen(appState: appState) {
             handleShowOnHover(appState: appState, screen: screen)
+            if #available(macOS 27.0, *) {
+                refreshStripIfNeeded(appState: appState, screen: screen)
+            }
         }
         return event
     }
@@ -401,9 +415,10 @@ extension HIDEventManager {
         // click replayed — and put back the moment their panel is up, rather than after a
         // fixed second and a half, which is what made every hidden item flash into view.
         let systemItem = MenuBarItemProvider27.systemItem(at: location)
+        let mayOpenFromPress = systemItem.map { !Self.systemItemsIgnoringPress.contains($0.identifier) } ?? false
         Task {
-            let baseline = Self.windowNumbers()
-            if let systemItem, !Self.systemItemsIgnoringPress.contains(systemItem.identifier) {
+            if mayOpenFromPress, let systemItem {
+                let baseline = Self.windowNumbers()
                 await Self.press(systemItem.element)
                 if await Self.waitForPanel(baseline: baseline, pollsOf50ms: 5) {
                     return
@@ -412,14 +427,60 @@ extension HIDEventManager {
                 // that ignored the press is not asked again while Ice runs.
                 Self.systemItemsIgnoringPress.insert(systemItem.identifier)
             }
-            concealer.suspend(for: .milliseconds(1500))
-            try? await Task.sleep(for: .milliseconds(150))
+            // The click is replayed the moment the assertion is really gone rather than on a
+            // timer: releasing it queues behind other concealment work, and MenuBarAgent ignores
+            // a click that arrives while the assertion still stands, which is why the clock
+            // sometimes did nothing and opened on the second try. Nothing else is done before
+            // the replay, so the click is as quick as the release allows.
+            self.coverBarForLift(at: location, appState: appState)
+            await concealer.suspendReleased(for: .milliseconds(400))
             Self.replayClick(at: location)
-            if await Self.waitForPanel(baseline: baseline, pollsOf50ms: 24) {
-                concealer.endSuspension()
-            }
+            // The concealment is back when the lift runs out; the cover goes just after it.
+            try? await Task.sleep(for: .milliseconds(500))
+            (self.maskPanel as? MenuBarMaskPanel27)?.hide()
         }
         return nil
+    }
+
+    /// Keeps a recent picture of the bar, which the cover during a lift is cut from. The full
+    /// capture runs only when the item cache changes, which is far too seldom for that.
+    @available(macOS 27.0, *)
+    private func refreshStripIfNeeded(appState: AppState, screen: NSScreen) {
+        guard
+            isMouseInsideMenuBar(appState: appState, screen: screen),
+            lastStripRefresh.map({ $0.duration(to: .now) > .seconds(1) }) ?? true
+        else {
+            return
+        }
+        lastStripRefresh = .now
+        Task {
+            await appState.itemImageStore27.refreshStrip()
+        }
+    }
+
+    /// Covers the stretch of bar where the hidden items would appear during a lift.
+    @available(macOS 27.0, *)
+    private func coverBarForLift(at location: CGPoint, appState: AppState) {
+        guard
+            let panel = maskPanel as? MenuBarMaskPanel27,
+            let screen = NSScreen.screens.first(where: { CGDisplayBounds($0.displayID).contains(location) }),
+            let strip = appState.itemImageStore27.lastStrip,
+            // A capture older than this may show a stale wallpaper behind the translucent bar.
+            strip.taken.duration(to: .now) < .seconds(5),
+            strip.frame.contains(location),
+            let edge = MenuBarItemProvider27.leftEdge(for: screen.displayID)
+        else {
+            return
+        }
+        // Cover only where the hidden items surface: their own stretch of the bar, left of the
+        // leftmost item still drawn. Covering further left would freeze the application menus.
+        let displayBounds = CGDisplayBounds(screen.displayID)
+        let concealedLeft = appState.itemManager.itemCache.managedItems
+            .filter { !$0.isOnScreen && displayBounds.contains(CGPoint(x: $0.bounds.midX, y: $0.bounds.midY)) }
+            .map(\.bounds.minX)
+            .min()
+        let from = (concealedLeft.map { $0 - 8 } ?? edge - 500)
+        panel.cover(strip: strip.image, stripFrame: strip.frame, scale: strip.scale, from: from, upTo: edge, screen: screen)
     }
 
     /// The window numbers currently on screen.
@@ -485,11 +546,18 @@ extension HIDEventManager {
     // MARK: Handle Show On Hover
 
     private func handleShowOnHover(appState: AppState, screen: NSScreen) {
-        // Make sure the "ShowOnHover" feature is enabled and allowed.
-        guard
-            appState.settings.general.showOnHover,
-            appState.menuBarManager.showOnHoverAllowed
-        else {
+        // Make sure the "ShowOnHover" feature is enabled.
+        //
+        // `showOnHoverAllowed` is deliberately *not* checked here. It is cleared
+        // when the user clicks in the menu bar, so that hovering does not
+        // immediately undo a deliberate click, and it is restored only inside
+        // `MenuBarSection.hide()`. Checking it here disabled the hide-on-leave
+        // branch below as well — and that branch is what calls `hide()`. The flag
+        // therefore latched off the only mechanism that could clear it, leaving
+        // the Ice Bar on screen indefinitely: on whatever display it was opened
+        // on, while the user worked on another one. It is checked in the reveal
+        // branch instead, where it belongs.
+        guard appState.settings.general.showOnHover else {
             return
         }
 
@@ -501,7 +569,10 @@ extension HIDEventManager {
         let delay = appState.settings.advanced.showOnHoverDelay
 
         if hiddenSection.isHidden {
-            guard isMouseInsideEmptyMenuBarSpace(appState: appState, screen: screen) else {
+            guard
+                appState.menuBarManager.showOnHoverAllowed,
+                isMouseInsideEmptyMenuBarSpace(appState: appState, screen: screen)
+            else {
                 return
             }
             if let location = MouseHelpers.locationCoreGraphics {

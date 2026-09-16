@@ -138,6 +138,30 @@ final class Concealer27 {
         }
     }
 
+    /// Releases every assertion and returns once that has actually happened.
+    ///
+    /// Releasing goes through MenuBarAgent and queues behind whatever concealment change came
+    /// before it. A click replayed on a timer could therefore arrive while the assertion was
+    /// still live, and MenuBarAgent ignores those — which is why a click on the clock sometimes
+    /// did nothing and worked on the second try.
+    func suspendReleased(for duration: Duration) async {
+        suspendedUntil = .now + duration
+        isConcealing = false
+        concealedPIDs.removeAll()
+        let previous = applyTask
+        let release = Task { [controller] in
+            await previous?.value
+            controller.releaseAll()
+        }
+        applyTask = release
+        await release.value
+        Task { [weak self] in
+            try? await Task.sleep(for: duration)
+            self?.suspendedUntil = nil
+            self?.update()
+        }
+    }
+
     /// Puts concealment back before the suspension would have run out.
     func endSuspension() {
         guard suspendedUntil != nil else {
