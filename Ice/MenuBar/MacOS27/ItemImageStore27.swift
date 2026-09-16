@@ -32,8 +32,9 @@ final class ItemImageStore27 {
     /// version 3 kept the bar's own uneven padding around it; versions 4 and 5 left a haze
     /// of the bar over the tile, which showed as a pale box behind the glyph; version 6
     /// spaced the glyphs more tightly than the menu bar does; version 7 could not give a
-    /// glyph its full margin when the capture ended right at the glyph's edge.
-    private static let storeVersion = "8"
+    /// glyph its full margin when the capture ended right at the glyph's edge; version 8
+    /// could store a tile cut while the bar was re-laying out.
+    private static let storeVersion = "9"
 
     /// The margin left on each side of a glyph, in points, so items are spaced evenly and
     /// with the menu bar's own rhythm: its glyphs sit 18 to 29 points apart, median 22
@@ -120,8 +121,18 @@ final class ItemImageStore27 {
             return
         }
         let (strip, scale) = captured
+        // Only items that sat still through the capture are stored. See `settledTags`.
+        func frames(_ items: [MenuBarItem]) -> [String: CGRect] {
+            Dictionary(items.map { ($0.tag.description, $0.bounds) }, uniquingKeysWith: { first, _ in first })
+        }
+        let settled = ItemImages27.settledTags(before: frames(items), after: frames(await MenuBarItemProvider27.items()))
+        var skipped = 0
         var stored = 0
         for item in items where item.isOnScreen && !item.isControlItem && !concealedPIDs.contains(item.ownerPID) {
+            guard settled.contains(item.tag.description) else {
+                skipped += 1
+                continue
+            }
             guard
                 let rect = ItemImages27.cropRect(itemFrame: item.bounds, stripFrame: stripFrame, scale: scale),
                 let image = strip.cropping(to: rect),
@@ -133,7 +144,7 @@ final class ItemImageStore27 {
             stored += 1
         }
         writeIndex()
-        logger.debug("Stored \(stored, privacy: .public) item images from display \(displayID, privacy: .public)")
+        logger.debug("Stored \(stored, privacy: .public) item images from display \(displayID, privacy: .public), skipped \(skipped, privacy: .public) that moved")
     }
 
     /// Shows the applications of items that have no image for a moment, and captures them.

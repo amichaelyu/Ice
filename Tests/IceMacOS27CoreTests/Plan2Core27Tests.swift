@@ -284,6 +284,37 @@ struct ItemImageBackground27Tests {
     }
 }
 
+@Suite("Settled item frames")
+struct SettledFrames27Tests {
+    let a = CGRect(x: 100, y: 0, width: 30, height: 24)
+    let b = CGRect(x: 140, y: 0, width: 30, height: 24)
+
+    @Test("Items that stayed put through the capture are kept")
+    func stayedPut() {
+        let frames = ["a": a, "b": b]
+        #expect(ItemImages27.settledTags(before: frames, after: frames) == ["a", "b"])
+    }
+
+    @Test("An item that moved during the capture is dropped")
+    func moved() {
+        // The bar re-lays out whenever an item is shown or hidden, and a capture taken
+        // across that lands between icons, which is how garbled tiles were stored.
+        let after = ["a": a.offsetBy(dx: 35, dy: 0), "b": b]
+        #expect(ItemImages27.settledTags(before: ["a": a, "b": b], after: after) == ["b"])
+    }
+
+    @Test("An item that vanished during the capture is dropped")
+    func vanished() {
+        #expect(ItemImages27.settledTags(before: ["a": a, "b": b], after: ["b": b]) == ["b"])
+    }
+
+    @Test("A sub-point jitter still counts as settled")
+    func jitter() {
+        let after = ["a": a.offsetBy(dx: 0.5, dy: 0)]
+        #expect(ItemImages27.settledTags(before: ["a": a], after: after) == ["a"])
+    }
+}
+
 @Suite("Item image trimming")
 struct ItemImageTrimming27Tests {
     /// A tile `width` wide whose pixels are opaque only in the given columns.

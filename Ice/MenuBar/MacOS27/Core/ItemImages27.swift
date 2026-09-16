@@ -159,6 +159,33 @@ enum ItemImages27 {
         return result
     }
 
+    /// The tags whose frames are the same in both reads, give or take a point.
+    ///
+    /// The bar re-lays out whenever an item is shown or hidden, or when Ice's own item
+    /// leaves it, and a capture taken across that re-layout cuts between icons: the stored
+    /// images then hold slivers of two neighbours or plain bar (measured on macOS 27.0,
+    /// after the Ice icon was switched off while items were being photographed). Reading
+    /// the frames again after the capture and keeping only what stayed put throws those
+    /// away, so the next capture can store them properly.
+    static func settledTags(before: [String: CGRect], after: [String: CGRect], tolerance: CGFloat = 1) -> Set<String> {
+        var settled = Set<String>()
+        for (tag, frame) in before {
+            guard let later = after[tag] else {
+                continue
+            }
+            let moved = max(
+                abs(later.minX - frame.minX),
+                abs(later.minY - frame.minY),
+                abs(later.width - frame.width),
+                abs(later.height - frame.height)
+            )
+            if moved <= tolerance {
+                settled.insert(tag)
+            }
+        }
+        return settled
+    }
+
     /// Anything fainter than this is a trace of a neighbouring item, not the glyph.
     private static let visibleAlpha: UInt8 = 16
 
