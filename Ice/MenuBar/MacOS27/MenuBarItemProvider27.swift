@@ -21,6 +21,7 @@ enum MenuBarItemProvider27 {
     private struct Entry {
         let element: AXUIElement
         let bundleID: String
+        let identifier: String
         let frame: CGRect
     }
 
@@ -81,11 +82,11 @@ enum MenuBarItemProvider27 {
 
     /// The Accessibility element of the system item drawn at the given point, from the last
     /// read. Control Centre opens from a press on it without lifting concealment.
-    static func systemItemElement(at point: CGPoint) -> AXUIElement? {
+    static func systemItem(at point: CGPoint) -> (element: AXUIElement, identifier: String)? {
         lock.withLock {
             entries.values
-                .first { $0.bundleID == menuBarAgentBundleID && $0.frame.insetBy(dx: -1, dy: -1).contains(point) }?
-                .element
+                .first { $0.bundleID == menuBarAgentBundleID && $0.frame.insetBy(dx: -1, dy: -1).contains(point) }
+                .map { ($0.element, $0.identifier) }
         }
     }
 
@@ -204,7 +205,7 @@ enum MenuBarItemProvider27 {
                 continue
             }
             let windowID = SyntheticWindowID27.make(bundleID: raw.bundleID, identifier: tag.title, index: raw.index)
-            newEntries[windowID] = Entry(element: raw.element, bundleID: raw.bundleID, frame: raw.frame)
+            newEntries[windowID] = Entry(element: raw.element, bundleID: raw.bundleID, identifier: raw.identifier, frame: raw.frame)
             items.append(MenuBarItem(
                 tag: tag,
                 syntheticWindowID: windowID,

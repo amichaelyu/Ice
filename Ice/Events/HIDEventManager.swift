@@ -372,6 +372,15 @@ extension HIDEventManager {
         lastEmptyMenuBarPoints[displayID]
     }
 
+    /// System items that do not open from an Accessibility press, so a click on them has to
+    /// go through MenuBarAgent. Seeded with what was measured on macOS 27.0; anything else
+    /// that turns out to ignore the press joins them at its first click.
+    private nonisolated(unsafe) static var systemItemsIgnoringPress: Set<String> = [
+        "com.apple.menuextra.clock",
+        "com.apple.menuextra.battery",
+        "com.apple.menuextra.wifi",
+    ]
+
     @available(macOS 27.0, *)
     private func handleSystemItemClick27(_ event: CGEvent, appState: AppState) -> CGEvent? {
         guard event.getIntegerValueField(.eventSourceUserData) != Self.replayedClickMarker else {
@@ -391,14 +400,17 @@ extension HIDEventManager {
         // battery and Wi-Fi ignore the press, so for those the concealment is lifted and the
         // click replayed — and put back the moment their panel is up, rather than after a
         // fixed second and a half, which is what made every hidden item flash into view.
-        let element = MenuBarItemProvider27.systemItemElement(at: location)
+        let systemItem = MenuBarItemProvider27.systemItem(at: location)
         Task {
             let baseline = Self.windowNumbers()
-            if let element {
-                await Self.press(element)
+            if let systemItem, !Self.systemItemsIgnoringPress.contains(systemItem.identifier) {
+                await Self.press(systemItem.element)
                 if await Self.waitForPanel(baseline: baseline, pollsOf50ms: 5) {
                     return
                 }
+                // Waiting for a panel that never comes only delays the click, so an item
+                // that ignored the press is not asked again while Ice runs.
+                Self.systemItemsIgnoringPress.insert(systemItem.identifier)
             }
             concealer.suspend(for: .milliseconds(1500))
             try? await Task.sleep(for: .milliseconds(150))
