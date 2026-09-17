@@ -88,6 +88,14 @@ struct PhotoSchedule27Tests {
         schedule.recordAttempt(bundleID: "ru.keepcoder.Telegram", now: 0)
         #expect(schedule.mayPhotograph(bundleID: "com.caldis.Mos", now: 1))
     }
+
+    @Test("An application that came away with no image is tried again sooner")
+    func retriedWhenNothingWasStored() {
+        var schedule = PhotoSchedule27()
+        schedule.recordAttempt(bundleID: "ru.keepcoder.Telegram", now: 0, stored: false)
+        #expect(!schedule.mayPhotograph(bundleID: "ru.keepcoder.Telegram", now: 44))
+        #expect(schedule.mayPhotograph(bundleID: "ru.keepcoder.Telegram", now: 45))
+    }
 }
 
 @Suite("ItemClick27")
@@ -342,6 +350,51 @@ struct SystemPanel27Tests {
         let closed: [(number: Int, layer: Int, height: CGFloat)] = [(number: 10, layer: 20, height: 1080.0)]
         #expect(ItemClick27.panelIsOnScreen(window: 45, windows: open))
         #expect(!ItemClick27.panelIsOnScreen(window: 45, windows: closed))
+    }
+}
+
+@Suite("Faded item tiles")
+struct FadedTile27Tests {
+    /// A tile of the given size holding that many opaque and that many faint pixels.
+    func tile(width: Int, height: Int, ink: Int, haze: Int) -> [UInt8] {
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        var index = 3
+        for _ in 0..<ink {
+            pixels[index] = 255
+            index += 4
+        }
+        for _ in 0..<haze {
+            pixels[index] = 40
+            index += 4
+        }
+        return pixels
+    }
+
+    // The proportions below are the ones measured on macOS 27.0; see `ItemImages27.isFaded`.
+    @Test("An item photographed standing still is kept")
+    func standingStill() {
+        let pixels = tile(width: 20, height: 20, ink: 52, haze: 28)
+        #expect(!ItemImages27.isFaded(pixels: pixels, width: 20, height: 20))
+    }
+
+    @Test("An item caught mid-fade is rejected")
+    func midFade() {
+        let pixels = tile(width: 20, height: 20, ink: 8, haze: 88)
+        #expect(ItemImages27.isFaded(pixels: pixels, width: 20, height: 20))
+    }
+
+    @Test("A tile with a little faint ink and no glyph at all is rejected")
+    func noGlyph() {
+        let pixels = tile(width: 10, height: 10, ink: 0, haze: 4)
+        #expect(ItemImages27.isFaded(pixels: pixels, width: 10, height: 10))
+    }
+
+    @Test("Three times as much haze as ink is still kept, and four times is not")
+    func theBoundary() {
+        let atTheLimit = tile(width: 20, height: 20, ink: 20, haze: 60)
+        let beyondIt = tile(width: 20, height: 20, ink: 20, haze: 81)
+        #expect(!ItemImages27.isFaded(pixels: atTheLimit, width: 20, height: 20))
+        #expect(ItemImages27.isFaded(pixels: beyondIt, width: 20, height: 20))
     }
 }
 

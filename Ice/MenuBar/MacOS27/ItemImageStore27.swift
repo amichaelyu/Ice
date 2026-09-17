@@ -214,18 +214,38 @@ final class ItemImageStore27 {
         guard !bundleIDs.isEmpty else {
             return
         }
-        for bundleID in bundleIDs {
-            photoSchedule.recordAttempt(bundleID: bundleID, now: now)
+        // One application at a time, waiting for each capture before revealing the next.
+        // Revealed together (measured 2026-09-17) thirteen items no longer fitted the narrow
+        // built-in bar and macOS folded nine of them into its own overflow, where they cannot
+        // be photographed at all. Revealed in a burst without waiting, they were caught
+        // mid-fade instead: the concealment applies behind them were still landing a second
+        // and a half later, long after the capture judged the bar settled.
+        for bundleID in bundleIDs.sorted().prefix(Self.photographsPerPass) {
             appState.concealer27.showTemporarily(bundleID: bundleID)
-        }
-        // A shown item is drawn 0.4–0.6 s after its application is allowed (measured).
-        try? await Task.sleep(for: .milliseconds(600))
-        // Forced: this capture is the point of having shown the applications at all, so it
-        // must not be answered by one taken before they appeared.
-        await captureActiveMenuBar(appState: appState, force: true)
-        for bundleID in bundleIDs {
+            // A shown item is drawn 0.4–0.6 s after its application is allowed (measured).
+            try? await Task.sleep(for: .milliseconds(600))
+            // Forced: this capture is the point of having shown the application at all, so it
+            // must not be answered by one taken before the item appeared.
+            await captureActiveMenuBar(appState: appState, force: true)
             appState.concealer27.endTemporaryShow(bundleID: bundleID)
+            // Only an application that came away with an image counts as photographed. One
+            // whose tile was refused, or whose item macOS folded away, would otherwise wait
+            // out the full ten minutes with no glyph at all in the Ice Bar.
+            photoSchedule.recordAttempt(
+                bundleID: bundleID,
+                now: ProcessInfo.processInfo.systemUptime,
+                stored: hasImage(forBundleID: bundleID)
+            )
         }
+    }
+
+    /// How many applications one pass photographs, so a first run does not spend a minute
+    /// revealing items one after another.
+    private static let photographsPerPass = 6
+
+    /// Whether any of the application's items has a stored image.
+    private func hasImage(forBundleID bundleID: String) -> Bool {
+        index.keys.contains { $0.hasPrefix(bundleID + ":") }
     }
 
     // MARK: Private
@@ -286,6 +306,14 @@ final class ItemImageStore27 {
             pixels: ItemImages27.removingBackground(pixels: pixels, width: width, height: height, background: background),
             colour: Self.glyphColor()
         )
+        // An item caught mid-fade cannot be rescued by any background estimate: what is left
+        // is a faint glyph inside a wide haze of bar, and storing it is what made the Ice
+        // Bar's icons pale and too wide. Refuse the tile; the item is photographed again
+        // later, standing still.
+        if ItemImages27.isFaded(pixels: keyed, width: width, height: height) {
+            logger.debug("Refusing a tile of an item caught mid-fade")
+            return nil
+        }
         // The bitmap holds premultiplied colours, so each channel follows the new opacity.
         for index in stride(from: 0, to: count, by: 4) {
             let opacity = Double(keyed[index + 3]) / 255

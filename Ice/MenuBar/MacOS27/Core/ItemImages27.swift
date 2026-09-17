@@ -232,6 +232,38 @@ enum ItemImages27 {
         return result
     }
 
+    /// Whether a tile photographs an item caught mid-fade rather than the item itself.
+    ///
+    /// An item fading in or out is drawn part-transparent, so its capture holds a faint glyph
+    /// inside a wide haze of menu bar that no background estimate can account for — the pale,
+    /// too-wide tiles that showed in the Ice Bar. Frames cannot catch this: a fading item
+    /// keeps its frame, it only loses opacity. The proportions can: measured on macOS 27.0,
+    /// such tiles carry 1.6–2.3 % opaque pixels against 21–26 % faint ones, while items
+    /// photographed standing still carry 5–20 % against 3–9 %. Far more haze than ink is the
+    /// signature, and three times as much separates the two with a wide margin either side.
+    static func isFaded(pixels: [UInt8], width: Int, height: Int) -> Bool {
+        var ink = 0
+        var haze = 0
+        for index in stride(from: 3, to: min(pixels.count, width * height * 4), by: 4) {
+            let alpha = pixels[index]
+            if alpha > solidAlpha {
+                ink += 1
+            } else if alpha > visibleAlpha {
+                haze += 1
+            }
+        }
+        guard ink > 0 else {
+            return haze > 0
+        }
+        return haze > ink * hazeToInkLimit
+    }
+
+    /// Opaque enough to be the glyph itself rather than a trace of the bar.
+    private static let solidAlpha: UInt8 = 200
+
+    /// How much more haze than ink a tile may hold before it counts as a fade.
+    private static let hazeToInkLimit = 3
+
     /// A stable file name for an item's image, safe to use on disk.
     static func fileName(forTag tag: String) -> String {
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
@@ -247,16 +279,21 @@ enum ItemImages27 {
 struct PhotoSchedule27 {
     static let minimumInterval: TimeInterval = 600
 
-    private var lastAttempts = [String: TimeInterval]()
+    /// A capture can come back with nothing usable: the item was folded into macOS's own
+    /// overflow, or its tile was refused as a fade. The item then has no glyph at all, which
+    /// is worth another try long before the usual ten minutes.
+    static let retryInterval: TimeInterval = 45
+
+    private var nextAttempts = [String: TimeInterval]()
 
     func mayPhotograph(bundleID: String, now: TimeInterval) -> Bool {
-        guard let last = lastAttempts[bundleID] else {
+        guard let next = nextAttempts[bundleID] else {
             return true
         }
-        return now - last >= Self.minimumInterval
+        return now >= next
     }
 
-    mutating func recordAttempt(bundleID: String, now: TimeInterval) {
-        lastAttempts[bundleID] = now
+    mutating func recordAttempt(bundleID: String, now: TimeInterval, stored: Bool = true) {
+        nextAttempts[bundleID] = now + (stored ? Self.minimumInterval : Self.retryInterval)
     }
 }

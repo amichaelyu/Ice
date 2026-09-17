@@ -194,20 +194,48 @@ final class Concealer27 {
         return now < settleAt ? settleAt - now : nil
     }
 
+    /// Shows applications for a moment, to click or photograph their items.
+    /// Every call must be balanced by ``endTemporaryShow(bundleIDs:)``.
+    ///
+    /// The whole set is shown in one change. Shown one at a time, each call re-applied
+    /// concealment and MenuBarAgent animated the bar again, so photographing ten items meant
+    /// ten reflows in a row and the capture caught the items in mid-fade: a faint glyph in a
+    /// wide haze of bar that the background removal could not account for (measured
+    /// 2026-09-17: those tiles held 1.6–2.3 % opaque pixels against 21–26 % faint ones, where
+    /// an item photographed while it stood still holds 5–20 % against 3–9 %).
+    func showTemporarily(bundleIDs: some Collection<String>) {
+        guard !bundleIDs.isEmpty else {
+            return
+        }
+        for bundleID in bundleIDs {
+            temporarilyShown[bundleID, default: 0] += 1
+        }
+        update()
+    }
+
+    /// Ends one ``showTemporarily(bundleIDs:)``.
+    func endTemporaryShow(bundleIDs: some Collection<String>) {
+        guard !bundleIDs.isEmpty else {
+            return
+        }
+        for bundleID in bundleIDs {
+            guard let count = temporarilyShown[bundleID] else {
+                continue
+            }
+            temporarilyShown[bundleID] = count > 1 ? count - 1 : nil
+        }
+        update()
+    }
+
     /// Shows an application for a moment, to click or photograph its item.
     /// Every call must be balanced by ``endTemporaryShow(bundleID:)``.
     func showTemporarily(bundleID: String) {
-        temporarilyShown[bundleID, default: 0] += 1
-        update()
+        showTemporarily(bundleIDs: CollectionOfOne(bundleID))
     }
 
     /// Ends one ``showTemporarily(bundleID:)``.
     func endTemporaryShow(bundleID: String) {
-        guard let count = temporarilyShown[bundleID] else {
-            return
-        }
-        temporarilyShown[bundleID] = count > 1 ? count - 1 : nil
-        update()
+        endTemporaryShow(bundleIDs: CollectionOfOne(bundleID))
     }
 
     /// Moves an application to a section of the saved layout and applies it.
