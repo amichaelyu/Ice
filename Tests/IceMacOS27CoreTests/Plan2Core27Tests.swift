@@ -169,6 +169,32 @@ struct ItemImageBackground27Tests {
         #expect(alpha(pixels, x: 2, y: 2) == 255)
     }
 
+    @Test("A background that turns midway down the rows also comes away clean")
+    func shadedUnevenlyRemoved() {
+        // Measured on macOS 27.0: the wallpaper behind the translucent bar shows through with
+        // its own structure, so one column ran 109 to 130 in red and 202 to 166 in blue, with
+        // the turn in the middle rows. A background interpolated between the top and bottom
+        // rows was out by up to 20 of 255 there, and that residue was the pale box behind
+        // every glyph. These are those measured colours, one per row.
+        let rows: [(r: UInt8, g: UInt8, b: UInt8)] = [
+            (109, 130, 202), (108, 130, 199), (117, 131, 191), (127, 135, 183), (130, 135, 177),
+        ]
+        var pixels = [UInt8]()
+        for y in 0..<5 {
+            for x in 0..<5 {
+                let colour = x == 2 && y == 2 ? (r: UInt8(255), g: UInt8(255), b: UInt8(255)) : rows[y]
+                pixels += [colour.r, colour.g, colour.b, 255]
+            }
+        }
+        let cleaned = ItemImages27.removingBackground(pixels: pixels, width: 5, height: 5, background: rows[2])
+        for y in 0..<5 {
+            for x in 0..<5 where !(x == 2 && y == 2) {
+                #expect(alpha(cleaned, x: x, y: y) == 0)
+            }
+        }
+        #expect(alpha(cleaned, x: 2, y: 2) == 255)
+    }
+
     @Test("The glyph keeps its own colour")
     func glyphColourKept() {
         let pixels = ItemImages27.removingBackground(pixels: tile(background: (100, 140, 170), centre: (40, 200, 90)), width: 5, height: 5, background: (100, 140, 170))

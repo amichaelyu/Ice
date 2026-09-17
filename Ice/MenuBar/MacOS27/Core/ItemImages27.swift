@@ -78,19 +78,23 @@ enum ItemImages27 {
         let count = min(pixels.count, width * height * 4)
         let backgroundChannels = [Double(background.r), Double(background.g), Double(background.b)]
 
-        // The bar is translucent, so the wallpaper behind it drifts its colour from one
-        // side of an item to the other, and the bar also shades from its top row to its
-        // bottom (measured on macOS 27.0: 11 to 18 between them). One colour for the whole
-        // tile leaves a haze, which shows as a pale box behind the glyph. So each column
-        // takes a colour from above the glyph and one from below it, and every pixel is
-        // measured against the blend of the two at its own row. A column the glyph covers
-        // edge to edge keeps the tile's colour instead of erasing itself.
-        func edgeBackground(column: Int, rows: [Int]) -> (colour: [Double], row: Int) {
+        // The bar is translucent, so the wallpaper behind it shows through, and it shows
+        // through with all of its structure. Measured on macOS 27.0, down one 29-row column
+        // the red channel ran 109 to 130 while the blue fell 202 to 166, with the turn in
+        // the middle rows; another column stayed flat for two thirds and then turned. Across
+        // the width of a single item, in one row, the same colour barely moves. A background
+        // guessed by interpolating down the rows is therefore out by up to 20 of 255 in the
+        // middle rows, and that residue is the pale box that showed behind every glyph and
+        // made the tiles too wide. So each row takes its own colour, one from the left edge
+        // and one from the right, and every pixel is measured against the blend of the two at
+        // its own column. A row the glyph covers edge to edge keeps the tile's commonest
+        // colour instead of erasing itself.
+        func edgeBackground(row: Int, columns: [Int]) -> (colour: [Double], column: Int) {
             var closest = backgroundChannels
-            var closestRow = rows.first ?? 0
+            var closestColumn = columns.first ?? 0
             var closestDrift = Double.infinity
-            for y in rows {
-                let index = (y * width + column) * 4
+            for x in columns {
+                let index = (row * width + x) * 4
                 guard index + 2 < count else {
                     continue
                 }
@@ -99,28 +103,32 @@ enum ItemImages27 {
                 if drift < closestDrift {
                     closestDrift = drift
                     closest = candidate
-                    closestRow = y
+                    closestColumn = x
                 }
             }
-            return closestDrift <= maximumColumnDrift ? (closest, closestRow) : (backgroundChannels, closestRow)
+            return closestDrift <= maximumColumnDrift ? (closest, closestColumn) : (backgroundChannels, closestColumn)
         }
 
-        let topRows = [0, 1].filter { $0 < height }
-        let bottomRows = [height - 2, height - 1].filter { $0 >= 0 }
-        var topBackgrounds = [(colour: [Double], row: Int)]()
-        var bottomBackgrounds = [(colour: [Double], row: Int)]()
-        for x in 0..<width {
-            topBackgrounds.append(edgeBackground(column: x, rows: topRows))
-            bottomBackgrounds.append(edgeBackground(column: x, rows: bottomRows))
+        let leftColumns = [0, 1].filter { $0 < width }
+        let rightColumns = [width - 2, width - 1].filter { $0 >= 0 }
+        var leftBackgrounds = [(colour: [Double], column: Int)]()
+        var rightBackgrounds = [(colour: [Double], column: Int)]()
+        for y in 0..<height {
+            leftBackgrounds.append(edgeBackground(row: y, columns: leftColumns))
+            rightBackgrounds.append(edgeBackground(row: y, columns: rightColumns))
         }
 
         func blendedBackground(at index: Int) -> [Double] {
             let pixel = index / 4
-            let top = topBackgrounds[pixel % width]
-            let bottom = bottomBackgrounds[pixel % width]
-            let span = Double(bottom.row - top.row)
-            let share = span > 0 ? min(1, max(0, Double(pixel / width - top.row) / span)) : 0
-            return (0..<3).map { top.colour[$0] + (bottom.colour[$0] - top.colour[$0]) * share }
+            let row = pixel / width
+            guard row < leftBackgrounds.count else {
+                return backgroundChannels
+            }
+            let left = leftBackgrounds[row]
+            let right = rightBackgrounds[row]
+            let span = Double(right.column - left.column)
+            let share = span > 0 ? min(1, max(0, Double(pixel % width - left.column) / span)) : 0
+            return (0..<3).map { left.colour[$0] + (right.colour[$0] - left.colour[$0]) * share }
         }
 
         func distance(at index: Int) -> Double {
