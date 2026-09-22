@@ -73,7 +73,8 @@ enum ItemImages27 {
         pixels: [UInt8],
         width: Int,
         height: Int,
-        background: (r: UInt8, g: UInt8, b: UInt8)
+        background: (r: UInt8, g: UInt8, b: UInt8),
+        tone: GlyphTone? = nil
     ) -> [UInt8] {
         let count = min(pixels.count, width * height * 4)
         let backgroundChannels = [Double(background.r), Double(background.g), Double(background.b)]
@@ -151,8 +152,35 @@ enum ItemImages27 {
             return result
         }
 
+        // A textured wallpaper defeats any guess at the background. Over an aerial photograph
+        // the bar showed road markings, cars and asphalt within a single item's width, and
+        // every one of them sat far from the estimate and came through as glyph (measured on
+        // macOS 27.0). The glyph itself is drawn in one colour, though, while a photograph
+        // scatters: among the pixels clearly off the background, the commonest colour is the
+        // glyph's. So a pixel counts as glyph only as far as it also comes close to that colour.
+        // A tile with no dominant colour — an icon drawn in several — keeps the background
+        // measure alone, so colour icons are not eaten away.
+        let glyphColour = dominantColour(
+            among: stride(from: 0, to: count, by: 4).filter { distance(at: $0) >= glyphDistance * farShare },
+            pixels: pixels,
+            tone: tone
+        )
+        let backgroundToGlyph = glyphColour.map { colour in
+            (0..<3).reduce(0.0) { max($0, abs(backgroundChannels[$1] - colour[$1])) }
+        } ?? 0
+
         for index in stride(from: 0, to: count, by: 4) {
-            let opacity = min(1, distance(at: index) / glyphDistance)
+            var opacity = min(1, distance(at: index) / glyphDistance)
+            if let glyphColour, backgroundToGlyph > emptyTileDistance {
+                // Closeness to the glyph alone decides once the glyph's colour is known: over a
+                // photograph the distance from the background estimate is unreliable for the
+                // glyph as much as for the wallpaper, and taking the lower of the two left the
+                // glyph itself part-transparent. A background that merely drifts towards the
+                // glyph's colour stays under the floor.
+                let fromGlyph = (0..<3).reduce(0.0) { max($0, abs(Double(pixels[index + $1]) - glyphColour[$1])) }
+                let closeness = 1 - fromGlyph / backgroundToGlyph
+                opacity = min(1, max(0, (closeness - glyphPriorFloor) / (1 - glyphPriorFloor)))
+            }
             guard opacity > noiseFloor else {
                 result[index + 3] = 0
                 continue
@@ -166,6 +194,159 @@ enum ItemImages27 {
         }
         return result
     }
+
+    /// The same pixels with every separate mark that holds no solid pixel made transparent.
+    ///
+    /// Wallpaper detail in the glyph's own colour survives any colour test: over an aerial
+    /// photograph, a white road marking under the spot where hidden items are photographed
+    /// came through as a faint streak beside every one of them, at the very same pixels
+    /// (measured on macOS 27.0). A glyph's own soft rim touches its solid core, while such a
+    /// mark stands apart and never reaches solid, so marks are kept or dropped whole.
+    static func droppingFaintMarks(pixels: [UInt8], width: Int, height: Int) -> [UInt8] {
+        let count = width * height
+        guard count > 0, pixels.count >= count * 4 else {
+            return pixels
+        }
+        var result = pixels
+        var visited = [Bool](repeating: false, count: count)
+        for start in 0..<count where !visited[start] && pixels[start * 4 + 3] > visibleAlpha {
+            // Gather the mark this pixel belongs to, neighbours in all eight directions.
+            var mark = [start]
+            var strongest = pixels[start * 4 + 3]
+            visited[start] = true
+            var cursor = 0
+            while cursor < mark.count {
+                let pixel = mark[cursor]
+                cursor += 1
+                let x = pixel % width
+                let y = pixel / width
+                for dy in -1...1 {
+                    for dx in -1...1 where dx != 0 || dy != 0 {
+                        let nx = x + dx
+                        let ny = y + dy
+                        guard nx >= 0, nx < width, ny >= 0, ny < height else {
+                            continue
+                        }
+                        let neighbour = ny * width + nx
+                        guard !visited[neighbour], pixels[neighbour * 4 + 3] > visibleAlpha else {
+                            continue
+                        }
+                        visited[neighbour] = true
+                        strongest = max(strongest, pixels[neighbour * 4 + 3])
+                        mark.append(neighbour)
+                    }
+                }
+            }
+            guard strongest < solidMark else {
+                continue
+            }
+            for pixel in mark {
+                result[pixel * 4 + 3] = 0
+            }
+        }
+        return result
+    }
+
+    /// The opacity a mark must reach somewhere to be part of the glyph.
+    private static let solidMark: UInt8 = 160
+
+    /// Pixels at least this share of the glyph's distance from the background are clearly
+    /// off it, and so tell the glyph's colour.
+    private static let farShare = 0.5
+
+    /// The share of those pixels the near-white or the near-black ones must hold to count as
+    /// the glyph. Below it the icon is taken to be drawn in colour.
+    private static let extremeShare = 0.2
+
+    /// How near to white or black a channel must be for the pixel to be of a template glyph.
+    private static let extremeMargin = 55
+
+    /// How close to the glyph's colour a pixel must come before it counts as glyph at all. The
+    /// background's own drift towards that colour — a gradient, a lighter patch of wallpaper —
+    /// stays below it, and so do mid-tones of a photograph.
+    private static let glyphPriorFloor = 0.25
+
+    /// The glyph's colour among the given pixels: near white or near black, whichever of the
+    /// two they hold more of, as long as that is a real share of them.
+    ///
+    /// MenuBarAgent draws the active bar's template glyphs in white or in black. Looking only
+    /// at those two keeps a photograph's own dark patches from passing for the glyph: behind
+    /// the clock, asphalt outnumbered the thin strokes of its text, so the commonest colour
+    /// among clearly off-background pixels was the road, not the glyph (measured on macOS 27.0).
+    private static func dominantColour(among indices: [Int], pixels: [UInt8], tone: GlyphTone?) -> [Double]? {
+        guard indices.count >= 4 else {
+            return nil
+        }
+        var white = (count: 0, sum: [0.0, 0.0, 0.0])
+        var black = (count: 0, sum: [0.0, 0.0, 0.0])
+        for index in indices where index + 2 < pixels.count {
+            let channels = (0..<3).map { Int(pixels[index + $0]) }
+            if channels.allSatisfy({ $0 >= 255 - extremeMargin }) {
+                white.count += 1
+                for channel in 0..<3 {
+                    white.sum[channel] += Double(channels[channel])
+                }
+            } else if channels.allSatisfy({ $0 <= extremeMargin }) {
+                black.count += 1
+                for channel in 0..<3 {
+                    black.sum[channel] += Double(channels[channel])
+                }
+            }
+        }
+        // A tone decided for the whole bar is trusted over the tile's own count, which a dark
+        // patch of wallpaper can tip the wrong way.
+        let top: (count: Int, sum: [Double])
+        switch tone {
+        case .light?: top = white
+        case .dark?: top = black
+        case nil: top = white.count >= black.count ? white : black
+        }
+        guard top.count >= 4, tone != nil || Double(top.count) >= Double(indices.count) * extremeShare else {
+            return nil
+        }
+        return top.sum.map { $0 / Double(top.count) }
+    }
+
+    /// Which colour MenuBarAgent drew a bar's glyphs in.
+    enum GlyphTone: Sendable {
+        case light
+        case dark
+    }
+
+    /// How a tile leans: how many of its pixels, clearly apart from the tile's commonest colour,
+    /// are near white and how many near black.
+    ///
+    /// MenuBarAgent draws every glyph on a bar in the same colour, so summed over the bar the
+    /// glyphs outvote whatever wallpaper sits behind a few of them. Decided tile by tile, the
+    /// battery over a patch of dark asphalt judged its glyph black and came out as a black box
+    /// with the battery cut out of it (measured on macOS 27.0, over an aerial photograph). The
+    /// tile's own background is not counted, being close to the tile's commonest colour.
+    static func toneVotes(pixels: [UInt8], width: Int, height: Int) -> (light: Int, dark: Int) {
+        let count = min(pixels.count, width * height * 4)
+        guard count >= 4 else {
+            return (0, 0)
+        }
+        let common = backgroundColor(pixels: pixels, width: width, height: height)
+        let base = [Int(common.r), Int(common.g), Int(common.b)]
+        var light = 0
+        var dark = 0
+        for index in stride(from: 0, to: count, by: 4) {
+            let channels = (0..<3).map { Int(pixels[index + $0]) }
+            let apart = (0..<3).reduce(0) { max($0, abs(channels[$1] - base[$1])) }
+            guard apart >= toneVoteDistance else {
+                continue
+            }
+            if channels.allSatisfy({ $0 >= 255 - extremeMargin }) {
+                light += 1
+            } else if channels.allSatisfy({ $0 <= extremeMargin }) {
+                dark += 1
+            }
+        }
+        return (light, dark)
+    }
+
+    /// How far from the tile's commonest colour a pixel must be to cast a vote.
+    private static let toneVoteDistance = 60
 
     /// The tags whose frames are the same in both reads, give or take a point.
     ///

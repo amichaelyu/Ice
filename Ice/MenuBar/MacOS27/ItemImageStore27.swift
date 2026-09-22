@@ -182,6 +182,24 @@ final class ItemImageStore27 {
         let settled = ItemImages27.settledTags(before: frames(items), after: frames(await MenuBarItemProvider27.items()))
         var skipped = 0
         var stored = 0
+        // MenuBarAgent draws every glyph on a bar in one colour, white or black. Deciding which
+        // for the whole strip, rather than tile by tile, keeps a dark patch of wallpaper behind
+        // one item from passing for its glyph (see `ItemImages27.toneVotes`).
+        var votes = (light: 0, dark: 0)
+        for item in items where item.isOnScreen && !item.isControlItem && !concealedPIDs.contains(item.ownerPID) {
+            guard
+                settled.contains(item.tag.description),
+                let rect = ItemImages27.cropRect(itemFrame: item.bounds, stripFrame: stripFrame, scale: scale),
+                let crop = strip.cropping(to: rect),
+                let pixels = Self.pixels(of: crop)
+            else {
+                continue
+            }
+            let tileVotes = ItemImages27.toneVotes(pixels: pixels, width: crop.width, height: crop.height)
+            votes.light += tileVotes.light
+            votes.dark += tileVotes.dark
+        }
+        let tone: ItemImages27.GlyphTone? = votes.light + votes.dark == 0 ? nil : (votes.light >= votes.dark ? .light : .dark)
         for item in items where item.isOnScreen && !item.isControlItem && !concealedPIDs.contains(item.ownerPID) {
             guard settled.contains(item.tag.description) else {
                 skipped += 1
@@ -190,7 +208,7 @@ final class ItemImageStore27 {
             guard
                 let rect = ItemImages27.cropRect(itemFrame: item.bounds, stripFrame: stripFrame, scale: scale),
                 let image = strip.cropping(to: rect),
-                let glyph = withoutBackground(image, scale: scale)
+                let glyph = withoutBackground(image, scale: scale, tone: tone)
             else {
                 continue
             }
@@ -278,9 +296,30 @@ final class ItemImageStore27 {
         return isDark ? (255, 255, 255) : (0, 0, 0)
     }
 
+    /// The image's pixels, four bytes each, as the image rules expect them.
+    private static func pixels(of image: CGImage) -> [UInt8]? {
+        var data = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        let drawn = data.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: image.width,
+                height: image.height,
+                bitsPerComponent: 8,
+                bytesPerRow: image.width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else {
+                return false
+            }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            return true
+        }
+        return drawn ? data : nil
+    }
+
     /// The image with the menu bar behind the glyph made transparent, the glyph recoloured
     /// for the panel, and the bar's own padding replaced by an even margin.
-    private func withoutBackground(_ image: CGImage, scale: CGFloat) -> CGImage? {
+    private func withoutBackground(_ image: CGImage, scale: CGFloat, tone: ItemImages27.GlyphTone?) -> CGImage? {
         let width = image.width
         let height = image.height
         let count = width * height * 4
@@ -302,18 +341,22 @@ final class ItemImageStore27 {
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         let pixels = Array(UnsafeBufferPointer(start: bytes, count: count))
         let background = ItemImages27.backgroundColor(pixels: pixels, width: width, height: height)
-        var keyed = ItemImages27.tinted(
-            pixels: ItemImages27.removingBackground(pixels: pixels, width: width, height: height, background: background),
-            colour: Self.glyphColor()
-        )
+        let removed = ItemImages27.removingBackground(pixels: pixels, width: width, height: height, background: background, tone: tone)
         // An item caught mid-fade cannot be rescued by any background estimate: what is left
         // is a faint glyph inside a wide haze of bar, and storing it is what made the Ice
         // Bar's icons pale and too wide. Refuse the tile; the item is photographed again
-        // later, standing still.
-        if ItemImages27.isFaded(pixels: keyed, width: width, height: height) {
+        // later, standing still. This comes before faint marks are dropped, or a faded glyph
+        // would be dropped whole and stored as an empty tile.
+        if ItemImages27.isFaded(pixels: removed, width: width, height: height) {
             logger.debug("Refusing a tile of an item caught mid-fade")
             return nil
         }
+        // Wallpaper detail in the glyph's own colour survives the colour test; marks that
+        // never reach solid are dropped whole, so the trim below does not keep them either.
+        var keyed = ItemImages27.tinted(
+            pixels: ItemImages27.droppingFaintMarks(pixels: removed, width: width, height: height),
+            colour: Self.glyphColor()
+        )
         // The bitmap holds premultiplied colours, so each channel follows the new opacity.
         for index in stride(from: 0, to: count, by: 4) {
             let opacity = Double(keyed[index + 3]) / 255

@@ -195,6 +195,76 @@ struct ItemImageBackground27Tests {
         #expect(alpha(cleaned, x: 2, y: 2) == 255)
     }
 
+    @Test("A photographed wallpaper behind a white glyph does not come through")
+    func texturedBackgroundRemoved() {
+        // Measured on macOS 27.0 over an aerial photograph: road, cars and markings changed the
+        // bar's colour within a single item's width, so no guess at the background held and the
+        // photograph came through as part of the glyph. Mid-tones like these must not.
+        let width = 12
+        let height = 8
+        func isGlyph(_ x: Int, _ y: Int) -> Bool {
+            (4...7).contains(x) && (2...4).contains(y)
+        }
+        var pixels = [UInt8]()
+        for y in 0..<height {
+            for x in 0..<width {
+                let shade = UInt8(100 + (x * 37 + y * 23) % 61)
+                let value: UInt8 = isGlyph(x, y) ? 255 : shade
+                pixels += [value, value, value, 255]
+            }
+        }
+        let background = ItemImages27.backgroundColor(pixels: pixels, width: width, height: height)
+        let result = ItemImages27.removingBackground(pixels: pixels, width: width, height: height, background: background)
+        for y in 0..<height {
+            for x in 0..<width {
+                let alpha = result[(y * width + x) * 4 + 3]
+                if isGlyph(x, y) {
+                    #expect(alpha > 200)
+                } else {
+                    #expect(alpha == 0)
+                }
+            }
+        }
+    }
+
+    @Test("A bar's glyph tone wins over a dark patch that outnumbers the glyph in one tile")
+    func toneFromTheWholeBar() {
+        // Measured on macOS 27.0: the battery sat on a patch of dark asphalt, its own tile
+        // judged the glyph black, and it came out as a black box with the battery cut out of it.
+        // Here the near-black patch outnumbers the white glyph, as it did there.
+        let width = 12
+        let height = 6
+        func isGlyph(_ x: Int, _ y: Int) -> Bool {
+            (8...9).contains(x) && (2...3).contains(y)
+        }
+        func isPatch(_ x: Int, _ y: Int) -> Bool {
+            (1...5).contains(x) && (1...4).contains(y)
+        }
+        var pixels = [UInt8]()
+        for y in 0..<height {
+            for x in 0..<width {
+                let value: UInt8 = isGlyph(x, y) ? 255 : isPatch(x, y) ? 10 : 128
+                pixels += [value, value, value, 255]
+            }
+        }
+        let background = ItemImages27.backgroundColor(pixels: pixels, width: width, height: height)
+        let result = ItemImages27.removingBackground(
+            pixels: pixels, width: width, height: height, background: background, tone: .light
+        )
+        for y in 0..<height {
+            for x in 0..<width {
+                let alpha = result[(y * width + x) * 4 + 3]
+                if isGlyph(x, y) {
+                    #expect(alpha > 200)
+                } else {
+                    #expect(alpha == 0)
+                }
+            }
+        }
+        let votes = ItemImages27.toneVotes(pixels: pixels, width: width, height: height)
+        #expect(votes.light == 4)
+    }
+
     @Test("The glyph keeps its own colour")
     func glyphColourKept() {
         let pixels = ItemImages27.removingBackground(pixels: tile(background: (100, 140, 170), centre: (40, 200, 90)), width: 5, height: 5, background: (100, 140, 170))
@@ -421,6 +491,36 @@ struct FadedTile27Tests {
         let beyondIt = tile(width: 20, height: 20, ink: 20, haze: 81)
         #expect(!ItemImages27.isFaded(pixels: atTheLimit, width: 20, height: 20))
         #expect(ItemImages27.isFaded(pixels: beyondIt, width: 20, height: 20))
+    }
+
+    @Test("A faint mark apart from the glyph is dropped, the glyph's own soft rim is kept")
+    func faintMarksDropped() {
+        // A solid glyph with a soft rim beside it, and a separate faint streak two columns off:
+        // a road marking photographed beside every hidden item (measured on macOS 27.0).
+        let width = 10
+        let height = 5
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        func set(_ x: Int, _ y: Int, _ alpha: UInt8) {
+            pixels[(y * width + x) * 4 + 3] = alpha
+        }
+        for y in 1...3 {
+            for x in 1...3 {
+                set(x, y, 255)
+            }
+            set(4, y, 60)
+        }
+        for y in 0..<height {
+            set(8, y, 50)
+        }
+        let result = ItemImages27.droppingFaintMarks(pixels: pixels, width: width, height: height)
+        func alpha(_ x: Int, _ y: Int) -> UInt8 {
+            result[(y * width + x) * 4 + 3]
+        }
+        #expect(alpha(2, 2) == 255)
+        #expect(alpha(4, 2) == 60)
+        for y in 0..<height {
+            #expect(alpha(8, y) == 0)
+        }
     }
 }
 
