@@ -70,6 +70,21 @@ final class Concealer27 {
                 self?.controller.releaseAll()
             }
         })
+        // Entering or leaving fullscreen swaps the menu bar the items are drawn in, and nothing
+        // else here notices: the concealment was left exactly as the previous bar had it, so
+        // Ice's own item was missing from the bar that slides down over a fullscreen window and
+        // there was nothing to click. `HIDEventManager` watches the same publisher, for the same
+        // reason, on earlier versions of macOS.
+        appState.$activeSpace
+            .map(\.isFullscreen)
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.update()
+                }
+            }
+            .store(in: &cancellables)
         let navigation = appState.navigationState
         navigation.$isSettingsPresented
             .combineLatest(navigation.$settingsNavigationIdentifier)
