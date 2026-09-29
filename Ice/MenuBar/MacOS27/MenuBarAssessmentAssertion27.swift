@@ -59,8 +59,21 @@ final class MenuBarAssessmentAssertion27: ConcealmentBackend27 {
     private static let activateSelector = NSSelectorFromString("activateWithConfiguration:completionHandler:")
     private static let invalidateSelector = NSSelectorFromString("invalidate")
 
-    /// MenuBarAgent numbers its system items 0 through 8 on macOS 27.0. Ice keeps all of them.
-    private static let systemItems = (0...8).map { NSNumber(value: $0) } as NSArray
+    /// The system items Ice keeps on the bar.
+    ///
+    /// MenuBarAgent numbers them, and on macOS 27.0 only five numbers draw anything: 0 is the
+    /// battery, 2 the clock, 6 Wi-Fi and 8 Control Centre; 1, 3, 4, 5 and 7 draw nothing, and so
+    /// does every number above 8. All of them are accepted, though, up to 127 at least, so the
+    /// range is wider than what this build of macOS draws: a system item added by a later build
+    /// would otherwise be concealed, and Ice hides applications' items, not the system's.
+    ///
+    /// Control Centre's capture indicator — the green camera button, orange for the microphone,
+    /// indigo for screen sharing — is not one of these numbers and cannot be kept. It is drawn
+    /// while no assertion is live and gone while one is, whatever the allowlist holds: every
+    /// number to 127, Control Centre's bundle identifier, the capturing application's own. The
+    /// small green dot beside the clock is not an item and stays either way. Measured with
+    /// `Scripts/macos27/system-item-probe.swift` on macOS 27.0 (2026-09-29).
+    private static let systemItems = (0...31).map { NSNumber(value: $0) } as NSArray
 
     private static let classes: (configuration: AnyClass, assertion: AnyClass)? = {
         guard
