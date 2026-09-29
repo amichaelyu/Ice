@@ -438,7 +438,14 @@ extension HIDEventManager {
             // for such a click brought every hidden item back on screen first, and the panel
             // only answered once MenuBarAgent had finished moving the bar: the icons appeared,
             // and the panel closed late behind them.
-            if ItemClick27.openPanelWindow(windows: Self.windowsForPanelCheck()) != nil {
+            // A banner shows in the same window as the panel — same process, same level, the
+            // size of the display (measured on macOS 27.0) — so the window alone cannot say
+            // whether a panel is open, and a click that arrived while a banner happened to be
+            // up was answered with Escape, dismissing the banner instead of opening the panel.
+            // A click is treated as dismissing a panel only when Ice opened one itself and its
+            // window is still there; a panel opened some other way is closed by the replayed
+            // click, as it would be without Ice.
+            if Self.itemShowingPanel != nil, ItemClick27.openPanelWindow(windows: Self.windowsForPanelCheck()) != nil {
                 Self.postEscape()
                 Self.bridgeLogger.debug("Click bridge: a panel was open, dismissed with Escape")
                 guard systemItem?.identifier != Self.itemShowingPanel else {
