@@ -65,7 +65,8 @@ final class MenuBarAssessmentAssertion27: ConcealmentBackend27 {
     /// battery, 2 the clock, 6 Wi-Fi and 8 Control Centre; 1, 3, 4, 5 and 7 draw nothing, and so
     /// does every number above 8. All of them are accepted, though, up to 127 at least, so the
     /// range is wider than what this build of macOS draws: a system item added by a later build
-    /// would otherwise be concealed, and Ice hides applications' items, not the system's.
+    /// would otherwise be concealed, and Ice hides applications' items, not the system's. The
+    /// range matches the one @carlossantos74 arrived at in jordanbaird/Ice#1001.
     ///
     /// Control Centre's capture indicator — the green camera button, orange for the microphone,
     /// indigo for screen sharing — is not one of these numbers and cannot be kept. It is drawn
@@ -73,7 +74,7 @@ final class MenuBarAssessmentAssertion27: ConcealmentBackend27 {
     /// number to 127, Control Centre's bundle identifier, the capturing application's own. The
     /// small green dot beside the clock is not an item and stays either way. Measured with
     /// `Scripts/macos27/system-item-probe.swift` on macOS 27.0 (2026-09-29).
-    private static let systemItems = (0...31).map { NSNumber(value: $0) } as NSArray
+    private static let systemItems = (0...63).map { NSNumber(value: $0) } as NSArray
 
     private static let classes: (configuration: AnyClass, assertion: AnyClass)? = {
         guard
