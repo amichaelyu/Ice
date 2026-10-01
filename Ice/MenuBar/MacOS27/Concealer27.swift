@@ -34,6 +34,7 @@ final class Concealer27: ObservableObject {
     /// Applications shown for a moment, with the number of callers showing each.
     private var temporarilyShown = [String: Int]()
     private var cancellables = Set<AnyCancellable>()
+    private var runningApplicationsObservation: NSKeyValueObservation?
 
     /// Whether any application is meant to be concealed right now.
     private(set) var isConcealing = false
@@ -74,6 +75,29 @@ final class Concealer27: ObservableObject {
                 self?.update()
             }
         })
+        // `didLaunchApplicationNotification` arrives only once an application has finished
+        // launching, and by then it has usually created its status item. The running
+        // applications list changes as soon as the process checks in, which is earlier:
+        // measured on macOS 27.0.1, AlDente created its item 400 ms after this fired.
+        runningApplicationsObservation = NSWorkspace.shared.observe(
+            \.runningApplications,
+            options: [.new]
+        ) { [weak self] _, change in
+            guard change.kind == .insertion else {
+                return
+            }
+            let launched = (change.newValue ?? []).compactMap { application -> (String, pid_t)? in
+                guard let bundleID = application.bundleIdentifier else {
+                    return nil
+                }
+                return (bundleID, application.processIdentifier)
+            }
+            Task { @MainActor in
+                for (bundleID, pid) in launched {
+                    self?.showWhileLaunching(bundleID: bundleID, pid: pid)
+                }
+            }
+        }
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
@@ -380,6 +404,42 @@ final class Concealer27: ObservableObject {
     /// Ends one ``showTemporarily(bundleID:)``.
     func endTemporaryShow(bundleID: String) {
         endTemporaryShow(bundleIDs: CollectionOfOne(bundleID))
+    }
+
+    /// The longest a launching application is shown while Ice waits for its item.
+    private static let launchGrace = Duration.seconds(8)
+
+    /// Shows a concealed application while it creates its status item.
+    ///
+    /// An item created while its application is concealed is offered no room, and an item
+    /// that sizes itself to that room — AlDente's, for one — settles at about 3 pt and never
+    /// grows back, not even after Ice quits; only relaunching the application without Ice fixes
+    /// it. Items of a fixed length, Amphetamine's for one, are not affected (measured on
+    /// macOS 27.0.1, 2026-10-01). Reported as jordanbaird/Ice#1007.
+    private func showWhileLaunching(bundleID: String, pid: pid_t) {
+        guard let section = savedLayout[bundleID], section != .visible else {
+            return
+        }
+        logger.notice("Showing launching \(bundleID, privacy: .public) until its item exists")
+        showTemporarily(bundleID: bundleID)
+        Task { [weak self] in
+            let start = ContinuousClock.now
+            var width: CGFloat = 0
+            while ContinuousClock.now < start + Self.launchGrace {
+                try? await Task.sleep(for: .milliseconds(300))
+                let items = await MenuBarItemProvider27.items()
+                if let item = items.first(where: { $0.ownerPID == pid && $0.bounds.width > 4 }) {
+                    width = item.bounds.width
+                    break
+                }
+            }
+            // Let the item finish laying out before it is concealed again.
+            try? await Task.sleep(for: Self.settleAfterChange)
+            self?.logger.notice(
+                "Concealing \(bundleID, privacy: .public) again after \(ContinuousClock.now - start, privacy: .public), item width \(width)"
+            )
+            self?.endTemporaryShow(bundleID: bundleID)
+        }
     }
 
     /// Moves an application to a section of the saved layout and applies it.
