@@ -16,7 +16,7 @@ import OSLog
 /// state of Ice's sections.
 @available(macOS 27.0, *)
 @MainActor
-final class Concealer27 {
+final class Concealer27: ObservableObject {
     private let controller = ConcealmentController27(backend: MenuBarAssessmentAssertion27())
     private let logger = Logger(category: "Concealer27")
     private weak var appState: AppState?
@@ -142,6 +142,53 @@ final class Concealer27 {
             await task.value
             try? await Task.sleep(for: .milliseconds(400))
             await self?.appState?.itemManager.cacheItemsIfNeeded()
+            await self?.checkStuckOverflow()
+        }
+    }
+
+    /// Whether the notched bar looks stuck with items folded away and no way to reach them.
+    ///
+    /// Settings shows this; nothing acts on it. The cure measured so far is to relaunch the
+    /// application whose item is missing, and which application that is cannot be told apart
+    /// from the frames Accessibility keeps for items it no longer draws.
+    @Published private(set) var isOverflowStuck = false
+
+    /// Notes whether concealment has left the notched bar's items folded with no overflow button.
+    ///
+    /// Seen twice on this machine (2026-09-29 and 2026-10-01), both times after Ice restarted
+    /// with the bar already crowded: macOS folds what does not fit beside the notch, concealing
+    /// frees the room again, and the fold is not reconsidered — the "«" goes away with the items
+    /// still behind it. Measured against that live state: neither `Scripts/macos27/reflow-probe.swift`
+    /// nor restarting Ice unfolds them, while relaunching the application whose item is missing
+    /// does, at once.
+    private func checkStuckOverflow() async {
+        let items = await MenuBarItemProvider27.items()
+        guard let screen = NSScreen.screenWithActiveMenuBar, screen.hasNotch else {
+            isOverflowStuck = false
+            return
+        }
+        let displayBounds = CGDisplayBounds(screen.displayID)
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let frames = items
+            .filter { !concealedPIDs.contains($0.ownerPID) && $0.ownerPID != ownPID && displayBounds.intersects($0.bounds) }
+            .map(\.bounds)
+        let stuck = StuckOverflow27.isStuck(
+            visibleItemFrames: frames,
+            chevronFrame: MenuBarItemProvider27.overflowButtonFrame(),
+            notchSpan: StuckOverflow27.notchSpan(
+                displayBounds: displayBounds,
+                leftAreaWidth: screen.auxiliaryTopLeftArea?.width,
+                rightAreaWidth: screen.auxiliaryTopRightArea?.width
+            )
+        )
+        guard stuck != isOverflowStuck else {
+            return
+        }
+        isOverflowStuck = stuck
+        if stuck {
+            logger.notice("The notched bar looks stuck: items folded away with no overflow button")
+        } else {
+            logger.notice("The notched bar lays its items out again")
         }
     }
 
