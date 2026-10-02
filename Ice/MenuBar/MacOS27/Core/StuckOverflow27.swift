@@ -48,4 +48,30 @@ enum StuckOverflow27 {
         }
         return underNotch || stacked
     }
+
+    /// The entries in a bar's window that belong to applications rather than to the system group.
+    ///
+    /// MenuBarAgent lists an application's item on the bar it is drawn on with its frame, and on
+    /// the other display's bar as an entry with no geometry at all (measured on macOS 27.0). Both
+    /// count: what matters is that the bar lists the item, not where it says it is. The system
+    /// group — battery, Wi-Fi, Control Centre, clock — sits at the right end, and is left out by
+    /// taking only what lies left of it.
+    ///
+    /// An item folded away beside the notch is listed by neither account, which is what makes a
+    /// bar missing items recognisable at all.
+    static func applicationEntryCount(childFrames: [CGRect], systemItemFrames: [CGRect]) -> Int {
+        guard let systemEdge = systemItemFrames.map(\.minX).min() else {
+            return childFrames.count
+        }
+        return childFrames.filter { $0.width < 1 || $0.minX < systemEdge - 1 }.count
+    }
+
+    /// Whether a bar draws fewer application items than there are to draw.
+    ///
+    /// This is the state on a notched bar that is not the active one, where the geometry
+    /// ``isStuck(visibleItemFrames:chevronFrame:notchSpan:)`` reads cannot be had: the items
+    /// folded away are simply absent from the bar's window, while the other display draws them.
+    static func isStuck(drawnApplicationItems: Int, expectedApplicationItems: Int) -> Bool {
+        expectedApplicationItems > 0 && drawnApplicationItems < expectedApplicationItems
+    }
 }

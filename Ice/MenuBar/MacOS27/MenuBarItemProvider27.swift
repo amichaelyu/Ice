@@ -48,6 +48,12 @@ enum MenuBarItemProvider27 {
     /// System item frames per display. MenuBarAgent describes the bars of both displays in its
     /// windows, unlike other applications, whose items only have frames on the active one.
     nonisolated(unsafe) private static var lastSystemFramesByDisplay = [CGDirectDisplayID: [CGRect]]()
+    /// Every frame in those windows, per display, system items included. A bar whose menu bar is
+    /// not the active one has no other account of what it draws: applications report frames for
+    /// the active bar alone.
+    nonisolated(unsafe) private static var lastBarFramesByDisplay = [CGDirectDisplayID: [CGRect]]()
+    /// How many of each bar's entries belong to applications rather than the system group.
+    nonisolated(unsafe) private static var lastApplicationEntriesByDisplay = [CGDirectDisplayID: Int]()
     /// How far left of the clock's own left edge the other system items reach (measured on
     /// macOS 27.0: 122 points on both displays — battery, Wi-Fi and Control Centre).
     private static let systemItemsSpan: CGFloat = 130
@@ -149,6 +155,17 @@ enum MenuBarItemProvider27 {
     /// is why that clock used to need two or three clicks.
     static func systemItemFrames(for displayID: CGDirectDisplayID) -> [CGRect] {
         lock.withLock { lastSystemFramesByDisplay[displayID] ?? [] }
+    }
+
+    /// Frames of everything MenuBarAgent draws on the given display, from the last read.
+    static func barFrames(for displayID: CGDirectDisplayID) -> [CGRect] {
+        lock.withLock { lastBarFramesByDisplay[displayID] ?? [] }
+    }
+
+    /// How many items of applications the given display's bar lists, from the last read, or `nil`
+    /// if that bar was not read. Items folded away beside the notch are listed by neither display.
+    static func applicationEntryCount(for displayID: CGDirectDisplayID) -> Int? {
+        lock.withLock { lastApplicationEntriesByDisplay[displayID] }
     }
 
     /// Frame of the system overflow button ("<<" / ">>"), from the last read.
@@ -254,29 +271,49 @@ enum MenuBarItemProvider27 {
                 // items are the rightmost group, and the clock is the widest of them: keep the
                 // items within the span they occupy (measured on macOS 27.0: 237 points from the
                 // leftmost of them to the clock's right edge).
+                // Each window is one display's bar, and what it lists belongs to that bar: an
+                // item's frame where it is drawn, and an entry with no geometry on the other
+                // display. So the windows are read one at a time, and a display is taken from the
+                // window's own frame — an entry with no geometry would otherwise be filed under
+                // whichever display happens to contain the origin.
                 var framesByDisplay = [CGDirectDisplayID: [CGRect]]()
+                var entriesByDisplay = [CGDirectDisplayID: Int]()
                 for window in elements(application, kAXWindowsAttribute) ?? [] {
-                    for child in elements(window, kAXChildrenAttribute) ?? [] {
-                        let hosted = elements(child, kAXChildrenAttribute)?.first ?? child
-                        guard let itemFrame = frame(of: hosted) else {
-                            continue
-                        }
-                        var display = CGDirectDisplayID(0)
-                        var matches: UInt32 = 0
-                        CGGetDisplaysWithPoint(CGPoint(x: itemFrame.midX, y: itemFrame.midY), 1, &display, &matches)
-                        guard matches > 0 else {
-                            continue
-                        }
-                        framesByDisplay[display, default: []].append(itemFrame)
+                    guard let windowFrame = frame(of: window) else {
+                        continue
                     }
+                    var display = CGDirectDisplayID(0)
+                    var matches: UInt32 = 0
+                    CGGetDisplaysWithPoint(CGPoint(x: windowFrame.midX, y: windowFrame.minY + 1), 1, &display, &matches)
+                    guard matches > 0 else {
+                        continue
+                    }
+                    // An entry the bar lists without geometry answers no position at all, so a
+                    // missing frame is kept as an empty one: the entry is what counts.
+                    let childFrames = (elements(window, kAXChildrenAttribute) ?? []).map { child in
+                        frame(of: elements(child, kAXChildrenAttribute)?.first ?? child) ?? .zero
+                    }
+                    framesByDisplay[display] = childFrames
+                    guard let clock = childFrames.max(by: { $0.width < $1.width }), clock.width > 80 else {
+                        continue
+                    }
+                    let systemFrames = childFrames.filter { $0.width > 1 && $0.minX >= clock.minX - systemItemsSpan }
+                    entriesByDisplay[display] = StuckOverflow27.applicationEntryCount(
+                        childFrames: childFrames,
+                        systemItemFrames: systemFrames
+                    )
                 }
                 let perDisplay = framesByDisplay.compactMapValues { frames -> [CGRect]? in
                     guard let clock = frames.max(by: { $0.width < $1.width }), clock.width > 80 else {
                         return nil
                     }
-                    return frames.filter { $0.minX >= clock.minX - systemItemsSpan }
+                    return frames.filter { $0.width > 1 && $0.minX >= clock.minX - systemItemsSpan }
                 }
-                lock.withLock { lastSystemFramesByDisplay = perDisplay }
+                lock.withLock {
+                    lastSystemFramesByDisplay = perDisplay
+                    lastBarFramesByDisplay = framesByDisplay
+                    lastApplicationEntriesByDisplay = entriesByDisplay
+                }
                 let systemFrames = rawItems
                     .filter { $0.bundleID == menuBarAgentBundleID && (activeDisplayBounds?.intersects($0.frame) ?? true) }
                     .map(\.frame)

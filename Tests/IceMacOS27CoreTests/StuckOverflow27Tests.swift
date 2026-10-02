@@ -64,3 +64,63 @@ struct StuckOverflow27Tests {
         #expect(!StuckOverflow27.isStuck(visibleItemFrames: frames, chevronFrame: nil, notchSpan: notch))
     }
 }
+
+@Suite("Stuck overflow on a bar that is not active")
+struct StuckOverflowByCount27Tests {
+    // The built-in bar as measured on 2026-10-02, with three Stats modules folded away:
+    // one application item and the four system ones.
+    let systemFrames = [
+        CGRect(x: -238, y: 98, width: 26, height: 33),
+        CGRect(x: -196, y: 98, width: 22, height: 33),
+        CGRect(x: -158, y: 98, width: 26, height: 33),
+        CGRect(x: -116, y: 98, width: 96, height: 33),
+    ]
+
+    func item(_ x: CGFloat, _ width: CGFloat) -> CGRect {
+        CGRect(x: x, y: 102, width: width, height: 24)
+    }
+
+    @Test("Only the entries left of the system group are counted")
+    func countsApplicationItems() {
+        let count = StuckOverflow27.applicationEntryCount(
+            childFrames: [item(-469, 33), item(-422, 33), item(-375, 33), item(-336, 46), item(-284, 31)] + systemFrames,
+            systemItemFrames: systemFrames
+        )
+        #expect(count == 5)
+    }
+
+    @Test("Items listed without geometry are counted too")
+    func countsPlaceholders() {
+        // The bar of the display that is not the active one lists its items this way.
+        let count = StuckOverflow27.applicationEntryCount(
+            childFrames: [.zero, .zero, .zero, .zero, .zero] + systemFrames,
+            systemItemFrames: systemFrames
+        )
+        #expect(count == 5)
+    }
+
+    @Test("A bar missing items counts fewer of them")
+    func countsWhatIsLeft() {
+        let count = StuckOverflow27.applicationEntryCount(
+            childFrames: [item(-284, 31)] + systemFrames,
+            systemItemFrames: systemFrames
+        )
+        #expect(count == 1)
+    }
+
+    @Test("A bar drawing fewer items than there are is stuck")
+    func fewerThanExpected() {
+        #expect(StuckOverflow27.isStuck(drawnApplicationItems: 1, expectedApplicationItems: 5))
+    }
+
+    @Test("A bar drawing them all is not")
+    func allDrawn() {
+        #expect(!StuckOverflow27.isStuck(drawnApplicationItems: 5, expectedApplicationItems: 5))
+        #expect(!StuckOverflow27.isStuck(drawnApplicationItems: 6, expectedApplicationItems: 5))
+    }
+
+    @Test("With nothing to draw there is nothing to miss")
+    func nothingExpected() {
+        #expect(!StuckOverflow27.isStuck(drawnApplicationItems: 0, expectedApplicationItems: 0))
+    }
+}

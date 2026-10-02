@@ -61,6 +61,19 @@ final class Concealer27: ObservableObject {
                 }
             })
         }
+        // Plugging a display in lays both bars out again, and whatever does not fit beside the
+        // notch is folded away — the state the check below watches for. Nothing else here notices
+        // a display arriving, so without this the check waits for the next concealment change,
+        // which on a quiet machine is a long way off.
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.update()
+            }
+        })
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
@@ -146,49 +159,118 @@ final class Concealer27: ObservableObject {
         }
     }
 
-    /// Whether the notched bar looks stuck with items folded away and no way to reach them.
+    /// Whether a notched bar looks stuck with items folded away and no way to reach them.
     ///
-    /// Settings shows this; nothing acts on it. The cure measured so far is to relaunch the
-    /// application whose item is missing, and which application that is cannot be told apart
-    /// from the frames Accessibility keeps for items it no longer draws.
+    /// Settings shows this, with the applications that could be the ones missing from it.
     @Published private(set) var isOverflowStuck = false
 
-    /// Notes whether concealment has left the notched bar's items folded with no overflow button.
+    /// The applications whose items belong on every bar while the hiding is in force.
     ///
-    /// Seen twice on this machine (2026-09-29 and 2026-10-01), both times after Ice restarted
-    /// with the bar already crowded: macOS folds what does not fit beside the notch, concealing
-    /// frees the room again, and the fold is not reconsidered — the "«" goes away with the items
-    /// still behind it. Measured against that live state: neither `Scripts/macos27/reflow-probe.swift`
-    /// nor restarting Ice unfolds them, while relaunching the application whose item is missing
-    /// does, at once.
+    /// Which of them a notched bar has folded away cannot be told from the bar: the items it
+    /// draws carry no owner, and Accessibility keeps reporting frames for items drawn nowhere.
+    /// So they are offered to the user as the candidates to relaunch, rather than acted on.
+    @Published private(set) var visibleApplications = [(bundleID: String, name: String)]()
+
+    /// Notes whether concealment has left a notched bar's items folded with no overflow button.
+    ///
+    /// Seen three times here — 2026-09-29, 10-01 and 10-02 — and the third time with the trigger
+    /// in hand: plugging the second display in. macOS lays both bars out again, folds what does
+    /// not fit beside the notch, and never reconsiders once Ice frees the room; the "«" goes away
+    /// with the items still behind it.
+    ///
+    /// A bar that is not the active one is read by counting: its own window lists what it draws,
+    /// and the items folded away are simply absent from it while the other display draws them.
+    /// That is the case that matters — the display being worked on is usually the other one, and
+    /// with only the active bar's geometry to go by this watched the wrong display for two days.
     private func checkStuckOverflow() async {
         let items = await MenuBarItemProvider27.items()
-        guard let screen = NSScreen.screenWithActiveMenuBar, screen.hasNotch else {
-            isOverflowStuck = false
-            return
-        }
-        let displayBounds = CGDisplayBounds(screen.displayID)
         let ownPID = ProcessInfo.processInfo.processIdentifier
-        let frames = items
-            .filter { !concealedPIDs.contains($0.ownerPID) && $0.ownerPID != ownPID && displayBounds.intersects($0.bounds) }
-            .map(\.bounds)
-        let stuck = StuckOverflow27.isStuck(
-            visibleItemFrames: frames,
-            chevronFrame: MenuBarItemProvider27.overflowButtonFrame(),
-            notchSpan: StuckOverflow27.notchSpan(
-                displayBounds: displayBounds,
-                leftAreaWidth: screen.auxiliaryTopLeftArea?.width,
-                rightAreaWidth: screen.auxiliaryTopRightArea?.width
-            )
-        )
+        let agentBundleID = MenuBarItemProvider27.menuBarAgentBundleID
+        let applicationItems = items.filter { item in
+            item.ownerPID != ownPID
+                && !concealedPIDs.contains(item.ownerPID)
+                && item.sourceApplication?.bundleIdentifier != agentBundleID
+        }
+        // What each bar lists, by MenuBarAgent's own account of it. Both displays list every
+        // item that belongs to the bar — the one it is drawn on with a frame, the other without
+        // geometry — so a bar listing fewer than another is a bar missing items. The items the
+        // applications report are no use here: a folded item keeps the frame it last had, so it
+        // still reads as drawn (measured 2026-10-02, with four of five items gone from the
+        // built-in bar and all five still reporting frames on it).
+        let counts = NSScreen.screens.reduce(into: [CGDirectDisplayID: Int]()) { counts, screen in
+            counts[screen.displayID] = MenuBarItemProvider27.applicationEntryCount(for: screen.displayID)
+        }
+        let mostListed = counts.values.max() ?? 0
+        let described = NSScreen.screens.map { screen in
+            "\(screen.displayID)\(screen.hasNotch ? " notched" : "") lists \(counts[screen.displayID].map(String.init) ?? "nothing")"
+        }.joined(separator: ", ")
+        logger.debug("Stuck check: \(applicationItems.count, privacy: .public) items to draw; \(described, privacy: .public)")
+        let stuck = NSScreen.screens.contains { screen in
+            guard screen.hasNotch, let listed = counts[screen.displayID] else {
+                return false
+            }
+            return StuckOverflow27.isStuck(drawnApplicationItems: listed, expectedApplicationItems: mostListed)
+        }
+        var applications = [String: String]()
+        for item in applicationItems {
+            guard let application = item.sourceApplication, let bundleID = application.bundleIdentifier else {
+                continue
+            }
+            applications[bundleID] = application.localizedName ?? bundleID
+        }
+        let candidates = applications
+            .map { (bundleID: $0.key, name: $0.value) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        // A read that caught the bar mid-change can come back with one item or none; keeping the
+        // last full answer is better than offering the user a list that empties as they look at it.
+        if !candidates.isEmpty, candidates.map(\.bundleID) != visibleApplications.map(\.bundleID) {
+            visibleApplications = candidates
+        }
         guard stuck != isOverflowStuck else {
             return
         }
         isOverflowStuck = stuck
         if stuck {
-            logger.notice("The notched bar looks stuck: items folded away with no overflow button")
+            logger.notice("A notched bar looks stuck: items folded away with no overflow button")
         } else {
             logger.notice("The notched bar lays its items out again")
+        }
+    }
+
+    /// Quits an application and starts it again, which is what lays its items out afresh.
+    ///
+    /// Asked for from Settings, for the application the user can see is missing. Ice does not do
+    /// it by itself: an item created while an assertion is live is laid out alone and leaves the
+    /// folded ones where they are (measured 2026-10-02, restarting TextInputMenuAgent brought
+    /// back its own item and nothing else), so only the owner can bring an item back — and the
+    /// owner is the user's application, not Ice's to close unasked.
+    func relaunch(bundleID: String) {
+        guard
+            let application = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first,
+            let url = application.bundleURL
+        else {
+            logger.warning("Cannot relaunch \(bundleID, privacy: .public): it is not running")
+            return
+        }
+        logger.notice("Relaunching \(bundleID, privacy: .public) to lay its menu bar items out again")
+        application.terminate()
+        Task { [logger] in
+            for _ in 0..<40 where !application.isTerminated {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            // An agent launchd keeps alive is back on its own by now, and opening it again does
+            // nothing; an application that refused to quit is left exactly as it was.
+            guard application.isTerminated else {
+                logger.warning("\(bundleID, privacy: .public) did not quit, so it was left alone")
+                return
+            }
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = false
+            do {
+                try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+            } catch {
+                logger.error("Could not start \(bundleID, privacy: .public) again: \(error, privacy: .public)")
+            }
         }
     }
 
