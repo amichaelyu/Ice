@@ -224,16 +224,40 @@ final class Concealer27: ObservableObject {
         let counts = NSScreen.screens.reduce(into: [CGDirectDisplayID: Int]()) { counts, screen in
             counts[screen.displayID] = MenuBarItemProvider27.applicationEntryCount(for: screen.displayID)
         }
-        let mostListed = counts.values.max() ?? 0
         let described = NSScreen.screens.map { screen in
             "\(screen.displayID)\(screen.hasNotch ? " notched" : "") lists \(counts[screen.displayID].map(String.init) ?? "nothing")"
         }.joined(separator: ", ")
         logger.debug("Stuck check: \(applicationItems.count, privacy: .public) items to draw; \(described, privacy: .public)")
+        let chevron = MenuBarItemProvider27.overflowButtonFrame()
         let stuck = NSScreen.screens.contains { screen in
             guard screen.hasNotch, let listed = counts[screen.displayID] else {
                 return false
             }
-            return StuckOverflow27.isStuck(drawnApplicationItems: listed, expectedApplicationItems: mostListed)
+            let displayBounds = CGDisplayBounds(screen.displayID)
+            // A bar with a "«" on it has folded its items away but left them a click away, which
+            // is macOS behaving as it means to. Measured on 2026-10-02, the counts do not trip on
+            // that anyway — a bar with the button listed 20 against the other display's 19, since
+            // the button is one of its entries — but the state is worth distinguishing all the
+            // same (raised by @jasonsmithio on jordanbaird/Ice#995).
+            if let chevron, displayBounds.intersects(chevron) {
+                return false
+            }
+            if let elsewhere = counts.filter({ $0.key != screen.displayID }).values.max() {
+                return StuckOverflow27.isStuck(drawnApplicationItems: listed, expectedApplicationItems: elsewhere)
+            }
+            // The only bar there is. With nothing to compare it against, the geometry is all that
+            // is left: an item under the notch, or one stacked on its neighbour, with no button to
+            // reach either. It cannot see a bar that lost its items outright, but it is what the
+            // check had before counting, and a MacBook on its own would otherwise go unwatched.
+            return StuckOverflow27.isStuck(
+                visibleItemFrames: applicationItems.filter { displayBounds.intersects($0.bounds) }.map(\.bounds),
+                chevronFrame: chevron,
+                notchSpan: StuckOverflow27.notchSpan(
+                    displayBounds: displayBounds,
+                    leftAreaWidth: screen.auxiliaryTopLeftArea?.width,
+                    rightAreaWidth: screen.auxiliaryTopRightArea?.width
+                )
+            )
         }
         var applications = [String: String]()
         for item in applicationItems {
@@ -409,6 +433,12 @@ final class Concealer27: ObservableObject {
     /// The longest a launching application is shown while Ice waits for its item.
     private static let launchGrace = Duration.seconds(8)
 
+    /// Applications shown while they create their status items, with when each gives up.
+    private var launching = [String: (pid: pid_t, deadline: ContinuousClock.Instant)]()
+
+    /// The one task that watches for their items, however many are launching at once.
+    private var launchWatcher: Task<Void, Never>?
+
     /// Shows a concealed application while it creates its status item.
     ///
     /// An item created while its application is concealed is offered no room, and an item
@@ -417,27 +447,57 @@ final class Concealer27: ObservableObject {
     /// it. Items of a fixed length, Amphetamine's for one, are not affected (measured on
     /// macOS 27.0.1, 2026-10-01). Reported as jordanbaird/Ice#1007.
     private func showWhileLaunching(bundleID: String, pid: pid_t) {
-        guard let section = savedLayout[bundleID], section != .visible else {
+        guard
+            let section = savedLayout[bundleID],
+            section != .visible,
+            launching[bundleID] == nil
+        else {
             return
         }
         logger.notice("Showing launching \(bundleID, privacy: .public) until its item exists")
+        launching[bundleID] = (pid, .now + Self.launchGrace)
         showTemporarily(bundleID: bundleID)
-        Task { [weak self] in
-            let start = ContinuousClock.now
-            var width: CGFloat = 0
-            while ContinuousClock.now < start + Self.launchGrace {
+        startLaunchWatcher()
+    }
+
+    /// Watches for the items of every application being shown while it launches.
+    ///
+    /// One watcher for all of them, rather than one each: a login starts the hidden applications
+    /// together, and a read of every process's items for each of them, three times a second, is a
+    /// load worth not creating (raised by @jasonsmithio on jordanbaird/Ice#995).
+    private func startLaunchWatcher() {
+        guard launchWatcher == nil else {
+            return
+        }
+        launchWatcher = Task { [weak self] in
+            while true {
                 try? await Task.sleep(for: .milliseconds(300))
-                let items = await MenuBarItemProvider27.items()
-                if let item = items.first(where: { $0.ownerPID == pid && $0.bounds.width > 4 }) {
-                    width = item.bounds.width
+                guard let self, !launching.isEmpty else {
                     break
                 }
+                let items = await MenuBarItemProvider27.items()
+                let now = ContinuousClock.now
+                for (bundleID, entry) in launching {
+                    if let item = items.first(where: { $0.ownerPID == entry.pid && $0.bounds.width > 4 }) {
+                        endLaunchGrace(bundleID: bundleID, width: item.bounds.width)
+                    } else if now > entry.deadline {
+                        endLaunchGrace(bundleID: bundleID, width: 0)
+                    }
+                }
             }
+            self?.launchWatcher = nil
+        }
+    }
+
+    /// Conceals an application again once its item exists, or once the grace has run out.
+    private func endLaunchGrace(bundleID: String, width: CGFloat) {
+        guard launching.removeValue(forKey: bundleID) != nil else {
+            return
+        }
+        logger.notice("Concealing \(bundleID, privacy: .public) again, item width \(width, privacy: .public)")
+        Task { [weak self] in
             // Let the item finish laying out before it is concealed again.
             try? await Task.sleep(for: Self.settleAfterChange)
-            self?.logger.notice(
-                "Concealing \(bundleID, privacy: .public) again after \(ContinuousClock.now - start, privacy: .public), item width \(width)"
-            )
             self?.endTemporaryShow(bundleID: bundleID)
         }
     }

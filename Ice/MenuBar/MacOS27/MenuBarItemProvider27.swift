@@ -293,12 +293,14 @@ enum MenuBarItemProvider27 {
                     let childFrames = (elements(window, kAXChildrenAttribute) ?? []).map { child in
                         frame(of: elements(child, kAXChildrenAttribute)?.first ?? child) ?? .zero
                     }
-                    framesByDisplay[display] = childFrames
+                    // Added to, not replaced: one window per display is what macOS 27.0 has, but
+                    // a second one would otherwise take the first one's entries away with it.
+                    framesByDisplay[display, default: []].append(contentsOf: childFrames)
                     guard let clock = childFrames.max(by: { $0.width < $1.width }), clock.width > 80 else {
                         continue
                     }
                     let systemFrames = childFrames.filter { $0.width > 1 && $0.minX >= clock.minX - systemItemsSpan }
-                    entriesByDisplay[display] = StuckOverflow27.applicationEntryCount(
+                    entriesByDisplay[display, default: 0] += StuckOverflow27.applicationEntryCount(
                         childFrames: childFrames,
                         systemItemFrames: systemFrames
                     )
