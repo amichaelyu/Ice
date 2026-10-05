@@ -111,6 +111,18 @@ final class ItemImageStore27 {
         else {
             return nil
         }
+        guard isUsable(cgImage, key: key) else {
+            // Stored before this check existed, or stored against a wallpaper that defeated it.
+            // Forgetting it is what lets `photographMissing` take the item again.
+            index[key] = nil
+            let fileName = entry.fileName
+            let directory = directory
+            Task.detached(priority: .utility) {
+                try? FileManager.default.removeItem(at: directory.appendingPathComponent(fileName))
+            }
+            writeIndex()
+            return nil
+        }
         let image = CapturedImage(cgImage: cgImage, scale: entry.scale)
         loaded[key] = image
         return image
@@ -397,7 +409,28 @@ final class ItemImageStore27 {
         return padded.makeImage() ?? keyedImage
     }
 
+    /// Whether a finished tile is a glyph on transparency rather than a piece of the bar.
+    ///
+    /// Checked both when a tile is stored and when a stored one is first read back. A tile that
+    /// kept the bar used to stay for good: `photographMissing` only photographs items with no
+    /// image at all, so nothing ever replaced it, and on a notched Mac opening the layout window
+    /// does not help either — macOS folds most items away and they cannot be photographed there.
+    /// Three such tiles stood for a week on @jasonsmithio's machine (jordanbaird/Ice#995).
+    private func isUsable(_ image: CGImage, key: String) -> Bool {
+        guard let pixels = Self.pixels(of: image) else {
+            return true
+        }
+        guard ItemImages27.keepsTheBar(pixels: pixels, width: image.width, height: image.height) else {
+            return true
+        }
+        logger.notice("Refusing a tile of \(key, privacy: .public): the bar is still behind the glyph")
+        return false
+    }
+
     private func store(_ image: CGImage, scale: CGFloat, key: String) {
+        guard isUsable(image, key: key) else {
+            return
+        }
         let fileName = ItemImages27.fileName(forTag: key)
         loaded[key] = CapturedImage(cgImage: image, scale: scale)
         index[key] = IndexEntry(fileName: fileName, scale: scale)

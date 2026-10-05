@@ -698,3 +698,52 @@ struct SectionLayoutEditing27Tests {
         #expect(updated["ru.keepcoder.Telegram"] == .alwaysHidden)
     }
 }
+
+@Suite("Tiles that kept the bar")
+struct KeptBarTiles27Tests {
+    /// A tile of `width` × `height` with the given shares of solid and half-transparent pixels.
+    func tile(ink: Double, haze: Double, width: Int = 20, height: Int = 20) -> [UInt8] {
+        let count = width * height
+        var pixels = [UInt8](repeating: 0, count: count * 4)
+        let inkCount = Int((Double(count) * ink).rounded())
+        let hazeCount = Int((Double(count) * haze).rounded())
+        for index in 0..<count {
+            let alpha: UInt8 = if index < inkCount {
+                255
+            } else if index < inkCount + hazeCount {
+                120
+            } else {
+                0
+            }
+            pixels[index * 4 + 3] = alpha
+        }
+        return pixels
+    }
+
+    @Test("A tile that is nearly all glyph is the bar itself")
+    func solidTile() {
+        // Podman Desktop's stored tile, measured by @jasonsmithio: 58 % ink, 2 % haze.
+        #expect(ItemImages27.keepsTheBar(pixels: tile(ink: 0.58, haze: 0.02), width: 20, height: 20))
+    }
+
+    @Test("A tile that is mostly haze kept the wallpaper")
+    func hazyTiles() {
+        // Antigravity (23 % / 39 %) and Claude (9 % / 22 %) from the same report.
+        #expect(ItemImages27.keepsTheBar(pixels: tile(ink: 0.23, haze: 0.39), width: 20, height: 20))
+        #expect(ItemImages27.keepsTheBar(pixels: tile(ink: 0.09, haze: 0.22), width: 20, height: 20))
+    }
+
+    @Test("A glyph on transparency is kept")
+    func goodTiles() {
+        // Ollama's tile from the report (15 % / 3 %), and the range measured here before.
+        #expect(!ItemImages27.keepsTheBar(pixels: tile(ink: 0.15, haze: 0.03), width: 20, height: 20))
+        #expect(!ItemImages27.keepsTheBar(pixels: tile(ink: 0.05, haze: 0.09), width: 20, height: 20))
+        #expect(!ItemImages27.keepsTheBar(pixels: tile(ink: 0.20, haze: 0.03), width: 20, height: 20))
+    }
+
+    @Test("An empty tile is not blamed on the bar")
+    func emptyTile() {
+        #expect(!ItemImages27.keepsTheBar(pixels: tile(ink: 0, haze: 0), width: 20, height: 20))
+        #expect(!ItemImages27.keepsTheBar(pixels: [], width: 0, height: 0))
+    }
+}

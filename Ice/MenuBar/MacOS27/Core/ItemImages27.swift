@@ -447,6 +447,42 @@ enum ItemImages27 {
         return haze > ink * hazeToInkLimit
     }
 
+    /// Whether a finished tile still carries the bar behind its glyph.
+    ///
+    /// A tile that keeps the bar fails in one of two ways, and neither looks like a fade.
+    /// Nothing was cut at all, and the tile is nearly solid: a glyph covers 5–20 % of its tile
+    /// (measured here), while a tile with the bar left in came to 58 %. Or the colour test let
+    /// the wallpaper's own texture through, and the tile is mostly haze: good tiles hold 3–9 %,
+    /// against 22 % and 39 % in the two that were kept.
+    ///
+    /// The numbers are @jasonsmithio's, measured on three tiles stored on a notched MacBook that
+    /// stayed wrong for a week (jordanbaird/Ice#995). Refusing a good tile by mistake costs a
+    /// photograph; keeping a bad one used to cost the user that icon for good.
+    static func keepsTheBar(pixels: [UInt8], width: Int, height: Int) -> Bool {
+        let count = min(pixels.count / 4, width * height)
+        guard count > 0 else {
+            return false
+        }
+        var ink = 0
+        var haze = 0
+        for index in stride(from: 3, to: count * 4, by: 4) {
+            let alpha = pixels[index]
+            if alpha > solidAlpha {
+                ink += 1
+            } else if alpha > visibleAlpha {
+                haze += 1
+            }
+        }
+        let total = Double(count)
+        return Double(ink) / total > inkShareLimit || Double(haze) / total > hazeShareLimit
+    }
+
+    /// How much of a tile a glyph may cover before the tile is the bar itself.
+    private static let inkShareLimit = 0.45
+
+    /// How much of a tile may be left half-transparent before it is wallpaper, not a glyph.
+    private static let hazeShareLimit = 0.15
+
     /// Opaque enough to be the glyph itself rather than a trace of the bar.
     private static let solidAlpha: UInt8 = 200
 
