@@ -36,6 +36,12 @@ final class AdvancedSettings: ObservableObject {
     /// Time interval to temporarily show items for.
     @Published var tempShowInterval: TimeInterval = 15
 
+    /// Whether Ice draws its own camera and microphone indicator while it is hiding items.
+    ///
+    /// Control Centre's own is not drawn at all while anything is concealed, and no allowlist can
+    /// spare it, so without this there is nothing on the bar to say the camera is on (macOS 27).
+    @Published var showCaptureIndicator = true
+
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
@@ -56,6 +62,7 @@ final class AdvancedSettings: ObservableObject {
         Defaults.ifPresent(key: .hideApplicationMenus, assign: &hideApplicationMenus)
         Defaults.ifPresent(key: .enableSecondaryContextMenu, assign: &enableSecondaryContextMenu)
         Defaults.ifPresent(key: .showOnHoverDelay, assign: &showOnHoverDelay)
+        Defaults.ifPresent(key: .showCaptureIndicator, assign: &showCaptureIndicator)
         Defaults.ifPresent(key: .tempShowInterval, assign: &tempShowInterval)
 
         Defaults.ifPresent(key: .sectionDividerStyle) { rawValue in
@@ -108,6 +115,13 @@ final class AdvancedSettings: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { delay in
                 Defaults.set(delay, forKey: .showOnHoverDelay)
+            }
+            .store(in: &c)
+
+        $showCaptureIndicator
+            .receive(on: DispatchQueue.main)
+            .sink { show in
+                Defaults.set(show, forKey: .showCaptureIndicator)
             }
             .store(in: &c)
 

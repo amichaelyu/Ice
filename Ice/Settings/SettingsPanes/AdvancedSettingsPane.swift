@@ -36,9 +36,22 @@ struct AdvancedSettingsPane: View {
                 showOnHoverDelay
                 tempShowInterval
             }
+            if #available(macOS 27.0, *) {
+                IceSection("Menu Bar Indicators") {
+                    showCaptureIndicator
+                }
+            }
             IceSection("Permissions") {
                 allPermissions
             }
+        }
+    }
+
+    @ViewBuilder
+    private var showCaptureIndicator: some View {
+        Toggle(isOn: $settings.showCaptureIndicator) {
+            Text("Show a camera and microphone indicator")
+            Text("macOS draws none of its own while Ice is hiding items. Click Ice's to open Control Centre.")
         }
     }
 

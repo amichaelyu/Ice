@@ -133,6 +133,7 @@ final class Concealer27: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        appState.captureIndicatorPanel27.performSetup(watcher: appState.captureWatcher27)
         update()
     }
 
@@ -154,6 +155,9 @@ final class Concealer27: ObservableObject {
         )
         let concealed = ConcealmentPlanner27.effectivelyConcealed(sets: target)
         isConcealing = !target.isEmpty
+        // The devices are only worth asking about while something is hidden: macOS draws its own
+        // camera and microphone indicator the rest of the time.
+        appState.captureWatcher27.setWatching(isConcealing && appState.settings.advanced.showCaptureIndicator)
         defer { MenuBarItemProvider27.setConcealedPIDs(concealedPIDs) }
         concealedPIDs = Set(applications.compactMap { application in
             guard let bundleID = application.bundleIdentifier, concealed.contains(bundleID) else {

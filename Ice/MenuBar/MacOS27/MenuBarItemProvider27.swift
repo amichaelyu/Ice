@@ -137,6 +137,18 @@ enum MenuBarItemProvider27 {
         }
     }
 
+    /// The Accessibility element of the system item with the given identifier, from the last read.
+    ///
+    /// Control Centre's is `com.apple.menuextra.controlcenter` (measured on macOS 27.0, alongside
+    /// `…battery`, `…wifi` and `…clock`).
+    static func systemItem(withIdentifier identifier: String) -> AXUIElement? {
+        lock.withLock {
+            entries.values
+                .first { $0.bundleID == menuBarAgentBundleID && $0.identifier == identifier }?
+                .element
+        }
+    }
+
     /// Tells the provider which processes are concealed right now.
     static func setConcealedPIDs(_ pids: Set<pid_t>) {
         lock.withLock { concealedPIDs = pids }

@@ -63,6 +63,34 @@ final class AppState: ObservableObject {
         return concealer
     }
 
+    /// Storage for ``captureWatcher27``, typed loosely so the property exists on every macOS.
+    private var captureWatcher27Storage: AnyObject?
+
+    /// Watches whether the camera or the microphone is in use on macOS 27.
+    @available(macOS 27.0, *)
+    var captureWatcher27: CaptureWatcher27 {
+        if let watcher = captureWatcher27Storage as? CaptureWatcher27 {
+            return watcher
+        }
+        let watcher = CaptureWatcher27()
+        captureWatcher27Storage = watcher
+        return watcher
+    }
+
+    /// Storage for ``captureIndicatorPanel27``, typed loosely so the property exists on every macOS.
+    private var captureIndicatorPanel27Storage: AnyObject?
+
+    /// Draws Ice's own camera and microphone indicator on macOS 27.
+    @available(macOS 27.0, *)
+    var captureIndicatorPanel27: CaptureIndicatorPanel27 {
+        if let panel = captureIndicatorPanel27Storage as? CaptureIndicatorPanel27 {
+            return panel
+        }
+        let panel = CaptureIndicatorPanel27(appState: self)
+        captureIndicatorPanel27Storage = panel
+        return panel
+    }
+
     /// Storage for ``itemImageStore27``, typed loosely so the property exists on every macOS.
     private var itemImageStore27Storage: AnyObject?
 
