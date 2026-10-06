@@ -363,6 +363,17 @@ final class Concealer27: ObservableObject {
         }
     }
 
+    /// Ends a suspension before its time, so the items are hidden again as soon as whatever
+    /// needed them shown is done. The flash of revealed items is all the user sees of a lift, so
+    /// the less of it there is, the better.
+    func resumeConcealing() {
+        guard suspendedUntil != nil else {
+            return
+        }
+        suspendedUntil = nil
+        update()
+    }
+
     /// Releases every assertion and returns once that has actually happened.
     ///
     /// Releasing goes through MenuBarAgent and queues behind whatever concealment change came

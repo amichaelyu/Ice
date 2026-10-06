@@ -33,6 +33,20 @@ final class CaptureIndicatorPanel27: NSPanel {
     /// How much room is left between it and the items beside it.
     private static let gap: CGFloat = 6
 
+    private static let frameLock = NSLock()
+    nonisolated(unsafe) private static var shownFrame: CGRect?
+
+    /// Where the indicator is drawn right now, for the hit tests that decide whether the pointer
+    /// is over an empty stretch of the bar. Without this, hovering the indicator revealed the
+    /// hidden items and clicking it did whatever a click on the bare bar does.
+    nonisolated static func indicatorFrame() -> CGRect? {
+        frameLock.withLock { shownFrame }
+    }
+
+    private static func setIndicatorFrame(_ frame: CGRect?) {
+        frameLock.withLock { shownFrame = frame }
+    }
+
     init(appState: AppState) {
         self.appState = appState
         super.init(
@@ -79,6 +93,16 @@ final class CaptureIndicatorPanel27: NSPanel {
             if isVisible {
                 orderOut(nil)
             }
+            Self.setIndicatorFrame(nil)
+            return
+        }
+        if let remaining = appState.concealer27.timeUntilSettled() {
+            // The bar is still moving: where the items are now is not where they will be, and
+            // placing the indicator against them would put it on top of one. Wait it out.
+            Task { [weak self] in
+                try? await Task.sleep(for: remaining + .milliseconds(50))
+                self?.update(kind: kind)
+            }
             return
         }
         let barFrame = CGRect(
@@ -94,7 +118,7 @@ final class CaptureIndicatorPanel27: NSPanel {
             gap: Self.gap
         )
         let view = CaptureIndicatorView(kind: kind) { [weak self] in
-            self?.openControlCenter()
+            self?.openCaptureControls()
         }
         if let hostingView {
             hostingView.rootView = view
@@ -104,20 +128,63 @@ final class CaptureIndicatorPanel27: NSPanel {
             self.hostingView = hostingView
         }
         setFrame(frame, display: true)
+        Self.setIndicatorFrame(frame)
         if !isVisible {
             orderFrontRegardless()
         }
     }
 
-    /// Opens Control Centre, which holds the camera's own controls during a call.
-    private func openControlCenter() {
-        guard let element = MenuBarItemProvider27.systemItem(withIdentifier: "com.apple.menuextra.controlcenter") else {
-            logger.warning("Control Centre's item was not found, so the indicator has nothing to open")
+    /// Opens the camera and microphone controls, the ones the system's own indicator opens.
+    ///
+    /// The module those belong to is not drawn while anything is concealed, so there is nothing
+    /// to press until the concealment is lifted — the same lift a click on the clock needs, and
+    /// the same cost: the hidden items flash into view for a moment. Measured on macOS 27.0: with
+    /// nothing concealed the module is a system item of its own,
+    /// `com.apple.menuextra.audiovideo` ("Audio and Video Controls"), and it opens from an
+    /// Accessibility press.
+    ///
+    /// If it does not appear, Control Centre is opened instead: the same controls are inside it
+    /// during a call, and it opens with the concealment still in force.
+    private func openCaptureControls() {
+        guard let appState else {
             return
         }
-        logger.notice("Opening Control Centre from the capture indicator")
-        DispatchQueue.global(qos: .userInitiated).async {
-            _ = AXUIElementPerformAction(element, kAXPressAction as CFString)
+        logger.notice("Opening the capture controls from the indicator")
+        Task { [weak self] in
+            await appState.concealer27.suspendReleased(for: .milliseconds(900))
+            for _ in 0..<14 {
+                _ = await MenuBarItemProvider27.items()
+                if let element = MenuBarItemProvider27.systemItem(withIdentifier: Self.audioVideoItem) {
+                    await Self.press(element)
+                    // Hide the items again as soon as the controls are open, rather than letting
+                    // the lift run its course: what the user sees of it is the whole cost.
+                    try? await Task.sleep(for: .milliseconds(150))
+                    appState.concealer27.resumeConcealing()
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            self?.logger.warning("The audio and video item never appeared, so Control Centre was opened instead")
+            if let element = MenuBarItemProvider27.systemItem(withIdentifier: Self.controlCentreItem) {
+                await Self.press(element)
+            }
+            appState.concealer27.resumeConcealing()
+        }
+    }
+
+    /// The system item the camera and microphone controls belong to.
+    private static let audioVideoItem = "com.apple.menuextra.audiovideo"
+
+    /// Control Centre's own item, which holds the same controls during a call.
+    private static let controlCentreItem = "com.apple.menuextra.controlcenter"
+
+    /// Presses an Accessibility element off the main thread, which the call can block.
+    private static func press(_ element: AXUIElement) async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                _ = AXUIElementPerformAction(element, kAXPressAction as CFString)
+                continuation.resume()
+            }
         }
     }
 }
