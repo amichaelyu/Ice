@@ -183,6 +183,12 @@ final class Concealer27: ObservableObject {
         }
     }
 
+    /// How many checks in a row have disagreed with ``isOverflowStuck``.
+    ///
+    /// A single read can catch the bar mid-animation and count wrongly, and the notice flickered
+    /// on and off every few seconds because of it. Two in agreement are needed to change it.
+    private var stuckDisagreements = 0
+
     /// Whether a notched bar looks stuck with items folded away and no way to reach them.
     ///
     /// Settings shows this, with the applications that could be the ones missing from it.
@@ -207,6 +213,13 @@ final class Concealer27: ObservableObject {
     /// That is the case that matters — the display being worked on is usually the other one, and
     /// with only the active bar's geometry to go by this watched the wrong display for two days.
     private func checkStuckOverflow() async {
+        guard isConcealing else {
+            // With nothing concealed every item is on the bar, so a notched one folds what does
+            // not fit and there is nothing to tell. This is also when the user is most likely to
+            // be looking: opening the Menu Bar Layout window reveals everything, and the notice
+            // that brought them there would otherwise disappear as they arrived.
+            return
+        }
         let items = await MenuBarItemProvider27.items()
         let ownPID = ProcessInfo.processInfo.processIdentifier
         let agentBundleID = MenuBarItemProvider27.menuBarAgentBundleID
@@ -275,8 +288,14 @@ final class Concealer27: ObservableObject {
             visibleApplications = candidates
         }
         guard stuck != isOverflowStuck else {
+            stuckDisagreements = 0
             return
         }
+        stuckDisagreements += 1
+        guard stuckDisagreements >= 2 else {
+            return
+        }
+        stuckDisagreements = 0
         isOverflowStuck = stuck
         if stuck {
             logger.notice("A notched bar looks stuck: items folded away with no overflow button")
