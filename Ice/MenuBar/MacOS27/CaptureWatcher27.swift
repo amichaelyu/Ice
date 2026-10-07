@@ -92,6 +92,32 @@ final class CaptureWatcher27: ObservableObject {
         }
     }
 
+    /// How many channels a device can record on. None means it cannot record at all.
+    private static func inputChannels(of device: AudioObjectID) -> Int {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard
+            AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == 0,
+            size > 0
+        else {
+            return 0
+        }
+        let buffer = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(size),
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { buffer.deallocate() }
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, buffer) == 0 else {
+            return 0
+        }
+        let list = UnsafeMutableAudioBufferListPointer(buffer.assumingMemoryBound(to: AudioBufferList.self))
+        return list.reduce(0) { $0 + Int($1.mNumberChannels) }
+    }
+
     private static func isMicrophoneInUse() -> Bool {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
@@ -112,18 +138,12 @@ final class CaptureWatcher27: ObservableObject {
             return false
         }
         return devices.contains { device in
-            // Output devices answer the same question about playback, so only the ones with an
-            // input stream are asked.
-            var inputs = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyStreamConfiguration,
-                mScope: kAudioDevicePropertyScopeInput,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            var inputSize: UInt32 = 0
-            guard
-                AudioObjectGetPropertyDataSize(device, &inputs, 0, nil, &inputSize) == 0,
-                inputSize > 0
-            else {
+            // Output devices answer the same question about playback — headphones playing music
+            // report themselves as running — so only the ones that can record are asked. The size
+            // of the input stream configuration is no test of that: a device with no input at all
+            // still answers with an empty `AudioBufferList`, which is why playing through the
+            // headphones used to light the microphone indicator. Count the channels.
+            guard inputChannels(of: device) > 0 else {
                 return false
             }
             var running = AudioObjectPropertyAddress(
