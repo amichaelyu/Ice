@@ -773,9 +773,40 @@ extension HIDEventManager {
         else {
             return false
         }
+        if #available(macOS 27.0, *) {
+            // The menus come from the application that owns the menu bar, so the frame is in its
+            // display's coordinates whichever display is asked about. See `ApplicationMenuArea27`.
+            return Self.applicationMenuArea27(menuFrame: applicationMenuFrame, screen: screen)
+                .contains(mouseLocation)
+        }
         applicationMenuFrame.size.width += applicationMenuFrame.origin.x - screen.frame.origin.x
         applicationMenuFrame.origin.x = screen.frame.origin.x
         return applicationMenuFrame.contains(mouseLocation)
+    }
+
+    /// The stretch of the given screen's bar the application menus occupy on macOS 27.
+    @available(macOS 27.0, *)
+    private static func applicationMenuArea27(menuFrame: CGRect, screen: NSScreen) -> CGRect {
+        let displayBounds = CGDisplayBounds(screen.displayID)
+        let ownerScreen = NSScreen.screens.first { CGDisplayBounds($0.displayID).intersects(menuFrame) } ?? screen
+        let ownerBounds = CGDisplayBounds(ownerScreen.displayID)
+        // A notch on the owning display sits inside the measurement whenever the menus reach past
+        // it, and no other display has it.
+        var notchGap: CGFloat = 0
+        if
+            ownerScreen != screen,
+            let left = ownerScreen.auxiliaryTopLeftArea,
+            let right = ownerScreen.auxiliaryTopRightArea,
+            menuFrame.maxX - ownerBounds.minX > left.width
+        {
+            notchGap = max(right.minX - left.maxX, 0)
+        }
+        return ApplicationMenuArea27.area(
+            menuFrame: menuFrame,
+            ownerDisplay: ownerBounds,
+            display: displayBounds,
+            notchGap: notchGap
+        )
     }
 
     /// A Boolean value that indicates whether the mouse pointer is within
