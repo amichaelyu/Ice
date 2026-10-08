@@ -767,10 +767,10 @@ extension HIDEventManager {
     /// A Boolean value that indicates whether the mouse pointer is within
     /// the bounds of the current application menu.
     func isMouseInsideApplicationMenu(appState: AppState, screen: NSScreen) -> Bool {
-        guard
-            let mouseLocation = MouseHelpers.locationCoreGraphics,
-            var applicationMenuFrame = screen.getApplicationMenuFrame()
-        else {
+        guard let mouseLocation = MouseHelpers.locationCoreGraphics else {
+            return false
+        }
+        guard var applicationMenuFrame = screen.getApplicationMenuFrame() else {
             return false
         }
         if #available(macOS 27.0, *) {
@@ -784,12 +784,98 @@ extension HIDEventManager {
         return applicationMenuFrame.contains(mouseLocation)
     }
 
+    /// How far an application's menus reached on a display, the last time it was the active one
+    /// there. Each display draws the menus of whatever is frontmost on it, and Accessibility
+    /// describes only the active display's, so this is the one exact measurement to be had of
+    /// the others (measured on macOS 27.0: asked about any display, Accessibility answers with
+    /// the active one's menu bar, in its coordinates).
+    private nonisolated(unsafe) static var menuReachByDisplay: [CGDirectDisplayID: [String: CGFloat]] = {
+        // Kept across launches: the measurement can only be taken while the display is the active
+        // one, and starting with none of it means guessing at every bar until the user has gone
+        // round the displays again.
+        guard let stored = Defaults.dictionary(forKey: .macOS27MenuReach) as? [String: [String: Double]] else {
+            return [:]
+        }
+        return stored.reduce(into: [:]) { result, pair in
+            guard let displayID = CGDirectDisplayID(pair.key) else {
+                return
+            }
+            result[displayID] = pair.value.mapValues { CGFloat($0) }
+        }
+    }()
+
+    /// Which application last owned the menu bar of each display.
+    ///
+    /// A display that is not the active one goes on drawing the menus of the application that was
+    /// last active on it, which is not the same as whatever window happens to lie topmost there —
+    /// measured 2026-10-08, where the topmost window on the external display belonged to one
+    /// application and its bar was drawing another's menus.
+    private nonisolated(unsafe) static var menuOwnerByDisplay: [CGDirectDisplayID: String] = {
+        guard let stored = Defaults.dictionary(forKey: .macOS27MenuOwner) as? [String: String] else {
+            return [:]
+        }
+        return stored.reduce(into: [:]) { result, pair in
+            guard let displayID = CGDirectDisplayID(pair.key) else {
+                return
+            }
+            result[displayID] = pair.value
+        }
+    }()
+
+    private static func rememberMenuReach(_ reach: CGFloat, forApplication bundleID: String, on displayID: CGDirectDisplayID) {
+        if menuOwnerByDisplay[displayID] != bundleID {
+            menuOwnerByDisplay[displayID] = bundleID
+            Defaults.set(
+                menuOwnerByDisplay.reduce(into: [String: String]()) { $0[String($1.key)] = $1.value },
+                forKey: .macOS27MenuOwner
+            )
+        }
+        guard menuReachByDisplay[displayID]?[bundleID] != reach else {
+            return
+        }
+        menuReachByDisplay[displayID, default: [:]][bundleID] = reach
+        let stored = menuReachByDisplay.reduce(into: [String: [String: Double]]()) { result, pair in
+            result[String(pair.key)] = pair.value.mapValues { Double($0) }
+        }
+        Defaults.set(stored, forKey: .macOS27MenuReach)
+    }
+
+    /// The application frontmost on the given display, by its topmost ordinary window there.
+    private static func frontmostApplication(on displayBounds: CGRect) -> String? {
+        WindowInfo.createWindows(option: .onScreen)
+            .first { $0.layer == 0 && displayBounds.intersects($0.bounds) }?
+            .owningApplication?
+            .bundleIdentifier
+    }
+
     /// The stretch of the given screen's bar the application menus occupy on macOS 27.
     @available(macOS 27.0, *)
     private static func applicationMenuArea27(menuFrame: CGRect, screen: NSScreen) -> CGRect {
         let displayBounds = CGDisplayBounds(screen.displayID)
         let ownerScreen = NSScreen.screens.first { CGDisplayBounds($0.displayID).intersects(menuFrame) } ?? screen
         let ownerBounds = CGDisplayBounds(ownerScreen.displayID)
+        if
+            ownerScreen == screen,
+            let owner = NSWorkspace.shared.menuBarOwningApplication?.bundleIdentifier
+        {
+            // Measurable right now, so it is remembered for when this display is not the active
+            // one and the same application is still frontmost on it.
+            Self.rememberMenuReach(menuFrame.maxX - displayBounds.minX, forApplication: owner, on: screen.displayID)
+        }
+        var rememberedReach: CGFloat?
+        if
+            ownerScreen != screen,
+            // The application whose menus that bar is drawing: the one that last owned the menu
+            // bar there, or, until Ice has seen that happen, whatever lies topmost on it.
+            let drawing = Self.menuOwnerByDisplay[screen.displayID] ?? Self.frontmostApplication(on: displayBounds)
+        {
+            rememberedReach = ApplicationMenuArea27.reach(
+                onThisDisplay: Self.menuReachByDisplay[screen.displayID]?[drawing],
+                onOtherDisplays: Self.menuReachByDisplay
+                    .filter { $0.key != screen.displayID }
+                    .compactMap { $0.value[drawing] }
+            )
+        }
         // A notch on the owning display sits inside the measurement whenever the menus reach past
         // it, and no other display has it.
         var notchGap: CGFloat = 0
@@ -805,7 +891,10 @@ extension HIDEventManager {
             menuFrame: menuFrame,
             ownerDisplay: ownerBounds,
             display: displayBounds,
-            notchGap: notchGap
+            barHeight: screen.getMenuBarHeight() ?? menuFrame.height,
+            notchGap: notchGap,
+            itemsLeftEdge: ownerScreen == screen ? nil : MenuBarItemProvider27.leftEdge(for: screen.displayID),
+            rememberedReach: rememberedReach
         )
     }
 
