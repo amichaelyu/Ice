@@ -286,7 +286,12 @@ final class ItemImageStore27 {
             guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
                 return nil
             }
-            let filter = SCContentFilter(display: display, excludingWindows: [])
+            // Ice's own windows are left out of the capture. The camera and microphone indicator
+            // is drawn beside the items, so without this it was photographed as if it were one of
+            // them: two of the Ice Bar's tiles came back as an orange microphone.
+            let ownPID = ProcessInfo.processInfo.processIdentifier
+            let ownWindows = content.windows.filter { $0.owningApplication?.processID == ownPID }
+            let filter = SCContentFilter(display: display, excludingWindows: ownWindows)
             let scale = CGFloat(filter.pointPixelScale)
             let configuration = SCStreamConfiguration()
             configuration.sourceRect = CGRect(origin: .zero, size: size)
