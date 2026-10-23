@@ -334,10 +334,6 @@ enum MenuBarItemProvider27 {
             .min()
         lock.withLock {
             entries = newEntries
-            lastOverflowButtonFrame = chevronFrame
-            lastSystemItemFrames = newEntries.values
-                .filter { $0.bundleID == menuBarAgentBundleID && (activeDisplayBounds?.intersects($0.frame) ?? true) }
-                .map(\.frame)
             if let activeDisplayID, let leftEdge {
                 lastLeftEdges[activeDisplayID] = leftEdge
             }
@@ -362,53 +358,60 @@ enum MenuBarItemProvider27 {
         timeout: Float,
         chevronFrame: inout CGRect?
     ) -> (items: [RawItem], timedOut: Bool) {
+        let isMenuBarAgent = bundleID == menuBarAgentBundleID
         let application = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(application, timeout)
-        var barValue: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(application, kAXExtrasMenuBarAttribute as CFString, &barValue)
+        // The messaging timeout belongs to each element reference, not to the process, so
+        // every element read below is given it too. Left alone they wait about six seconds.
+        let (values, result) = attributeValues(
+            application,
+            isMenuBarAgent ? [kAXExtrasMenuBarAttribute, kAXWindowsAttribute] : [kAXExtrasMenuBarAttribute]
+        )
         guard
             result == .success,
-            let barValue,
-            CFGetTypeID(barValue) == AXUIElementGetTypeID(),
-            let children = elements(barValue as! AXUIElement, kAXChildrenAttribute) // swiftlint:disable:this force_cast
+            let bar = element(from: values[0]),
+            let children = elements(bar, kAXChildrenAttribute, timeout: timeout)
         else {
             return ([], result == .cannotComplete)
         }
         var rawItems = [RawItem]()
         for (index, child) in children.enumerated() {
-            if bundleID == menuBarAgentBundleID, string(child, kAXRoleAttribute) == kAXButtonRole {
-                // The system overflow control ("<<" / ">>").
-                chevronFrame = frame(of: child)
-                continue
+            var item = child
+            if isMenuBarAgent {
+                let group = attributes(of: child, [kAXRoleAttribute, kAXChildrenAttribute, kAXPositionAttribute, kAXSizeAttribute], timeout: timeout)
+                if group.role == kAXButtonRole {
+                    // The system overflow control ("<<" / ">>").
+                    chevronFrame = group.frame
+                    continue
+                }
+                // MenuBarAgent wraps each system item in a hosting group; the identifier
+                // and the drawn frame belong to the item inside it.
+                item = group.children?.first ?? child
             }
-            // MenuBarAgent wraps each system item in a hosting group; the identifier
-            // and the drawn frame belong to the item inside it.
-            let element = bundleID == menuBarAgentBundleID
-                ? (elements(child, kAXChildrenAttribute)?.first ?? child)
-                : child
+            let attributes = attributes(of: item, Self.itemAttributes, timeout: timeout)
             // Items whose frames are on another display stay in the list, marked as not
             // drawn, so a concealed item keeps its section (see `ItemDrawing27`).
-            guard let frame = frame(of: element) else {
+            guard let frame = attributes.frame else {
                 continue
             }
             rawItems.append(RawItem(
-                element: element,
+                element: item,
                 bundleID: bundleID,
                 pid: pid,
-                identifier: string(element, kAXIdentifierAttribute) ?? "",
-                title: string(element, kAXDescriptionAttribute) ?? string(element, kAXTitleAttribute),
+                identifier: attributes.identifier ?? "",
+                title: attributes.title,
                 index: index,
                 frame: frame
             ))
         }
-        if bundleID == menuBarAgentBundleID {
-            readBars(of: application)
+        if isMenuBarAgent {
+            readBars(values[1] as? [AXUIElement] ?? [], timeout: timeout)
         }
         return (rawItems, false)
     }
 
     /// Reads the bars MenuBarAgent draws, one window per display.
-    private static func readBars(of application: AXUIElement) {
+    private static func readBars(_ windows: [AXUIElement], timeout: Float) {
         // MenuBarAgent's window on the display whose bar is not active holds every item
         // drawn there, not only the system ones, so taking them all made Ice treat any
         // click as a click on a system item and lift concealment for it. The system
@@ -423,8 +426,9 @@ enum MenuBarItemProvider27 {
         var framesByDisplay = [CGDirectDisplayID: [CGRect]]()
         var barsByDisplay = [CGDirectDisplayID: (entries: Int, systemItemsWithGeometry: Int)]()
         var overflowButtonsByDisplay = [CGDirectDisplayID: CGRect]()
-        for window in elements(application, kAXWindowsAttribute) ?? [] {
-            guard let windowFrame = frame(of: window) else {
+        for window in windows {
+            let window = attributes(of: window, [kAXChildrenAttribute, kAXPositionAttribute, kAXSizeAttribute], timeout: timeout)
+            guard let windowFrame = window.frame else {
                 continue
             }
             var display = CGDirectDisplayID(0)
@@ -435,15 +439,20 @@ enum MenuBarItemProvider27 {
             }
             // An entry the bar lists without geometry answers no position at all, so a
             // missing frame is kept as an empty one: the entry is what counts.
-            let windowChildren = elements(window, kAXChildrenAttribute) ?? []
+            let windowChildren = (window.children ?? []).map { child in
+                attributes(of: child, [kAXRoleAttribute, kAXChildrenAttribute, kAXPositionAttribute, kAXSizeAttribute], timeout: timeout)
+            }
             let childFrames = windowChildren.map { child in
-                frame(of: elements(child, kAXChildrenAttribute)?.first ?? child) ?? .zero
+                guard let inner = child.children?.first else {
+                    return child.frame ?? .zero
+                }
+                return attributes(of: inner, [kAXPositionAttribute, kAXSizeAttribute], timeout: timeout).frame ?? .zero
             }
             // The overflow button is a button among the bar's entries, as it is under
             // `AXExtrasMenuBar`. It stays counted with them: the counts were measured
             // with it in (see `Concealer27.checkStuckOverflow`).
-            if let button = windowChildren.first(where: { string($0, kAXRoleAttribute) == kAXButtonRole }) {
-                overflowButtonsByDisplay[display] = frame(of: button) ?? .zero
+            if let button = windowChildren.first(where: { $0.role == kAXButtonRole }) {
+                overflowButtonsByDisplay[display] = button.frame ?? .zero
             }
             // Added to, not replaced: one window per display is what macOS 27.0 has, but
             // a second one would otherwise take the first one's entries away with it.
@@ -484,37 +493,100 @@ enum MenuBarItemProvider27 {
 
     // MARK: Accessibility Helpers
 
-    private static func value(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
-            return nil
-        }
-        return value
+    /// What Ice reads of an item: its frame, identifier and description or title.
+    private static let itemAttributes = [
+        kAXPositionAttribute,
+        kAXSizeAttribute,
+        kAXIdentifierAttribute,
+        kAXDescriptionAttribute,
+        kAXTitleAttribute,
+    ]
+
+    private struct Attributes {
+        var role: String?
+        var children: [AXUIElement]?
+        var frame: CGRect?
+        var identifier: String?
+        /// The description, or else the title.
+        var title: String?
     }
 
-    private static func string(_ element: AXUIElement, _ attribute: String) -> String? {
-        guard let string = value(element, attribute) as? String, !string.isEmpty else {
+    /// Reads the given attributes of an element in one call.
+    private static func attributes(of element: AXUIElement, _ names: [String], timeout: Float? = nil) -> Attributes {
+        if let timeout {
+            AXUIElementSetMessagingTimeout(element, timeout)
+        }
+        let (values, _) = attributeValues(element, names)
+        var attributes = Attributes()
+        var position: CFTypeRef?
+        var size: CFTypeRef?
+        var description: String?
+        var title: String?
+        for (name, value) in zip(names, values) {
+            switch name {
+            case kAXRoleAttribute: attributes.role = nonEmpty(value)
+            case kAXChildrenAttribute: attributes.children = value as? [AXUIElement]
+            case kAXPositionAttribute: position = value
+            case kAXSizeAttribute: size = value
+            case kAXIdentifierAttribute: attributes.identifier = nonEmpty(value)
+            case kAXDescriptionAttribute: description = nonEmpty(value)
+            case kAXTitleAttribute: title = nonEmpty(value)
+            default: break
+            }
+        }
+        attributes.title = description ?? title
+        if let position, let size {
+            attributes.frame = frame(position: position, size: size)
+        }
+        return attributes
+    }
+
+    /// The values of the given attributes, `nil` where the element has none.
+    private static func attributeValues(_ element: AXUIElement, _ names: [String]) -> ([CFTypeRef?], AXError) {
+        var values: CFArray?
+        let result = AXUIElementCopyMultipleAttributeValues(element, names as CFArray, AXCopyMultipleAttributeOptions(), &values)
+        guard result == .success, let values = values as? [CFTypeRef], values.count == names.count else {
+            return (Array(repeating: nil, count: names.count), result == .success ? .failure : result)
+        }
+        // A missing attribute comes back as an error wrapped in an `AXValue`.
+        return (values.map { value in
+            if CFGetTypeID(value) == AXValueGetTypeID(), AXValueGetType(value as! AXValue) == .axError { // swiftlint:disable:this force_cast
+                return nil
+            }
+            return value
+        }, result)
+    }
+
+    private static func nonEmpty(_ value: CFTypeRef?) -> String? {
+        guard let string = value as? String, !string.isEmpty else {
             return nil
         }
         return string
     }
 
-    private static func element(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
-        guard let value = value(element, attribute), CFGetTypeID(value) == AXUIElementGetTypeID() else {
+    private static func element(from value: CFTypeRef?) -> AXUIElement? {
+        guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
             return nil
         }
         return (value as! AXUIElement) // swiftlint:disable:this force_cast
     }
 
-    private static func elements(_ element: AXUIElement, _ attribute: String) -> [AXUIElement]? {
-        value(element, attribute) as? [AXUIElement]
+    private static func elements(_ element: AXUIElement, _ attribute: String, timeout: Float) -> [AXUIElement]? {
+        AXUIElementSetMessagingTimeout(element, timeout)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
+            return nil
+        }
+        return value as? [AXUIElement]
     }
 
     private static func frame(of element: AXUIElement) -> CGRect? {
+        attributes(of: element, [kAXPositionAttribute, kAXSizeAttribute]).frame
+    }
+
+    private static func frame(position positionValue: CFTypeRef, size sizeValue: CFTypeRef) -> CGRect? {
         guard
-            let positionValue = value(element, kAXPositionAttribute),
             CFGetTypeID(positionValue) == AXValueGetTypeID(),
-            let sizeValue = value(element, kAXSizeAttribute),
             CFGetTypeID(sizeValue) == AXValueGetTypeID()
         else {
             return nil
