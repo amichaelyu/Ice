@@ -107,6 +107,11 @@ class Permission: ObservableObject, Identifiable {
         }
     }
 
+    /// Starts running the permission check again after ``stopCheck()``.
+    func startCheck() {
+        configureCancellables()
+    }
+
     /// Stops running the permission check.
     func stopCheck() {
         timerCancellable?.cancel()
@@ -156,6 +161,31 @@ final class ScreenRecordingPermission: Permission {
             request: {
                 ScreenCapture.requestPermissions()
             }
+        )
+    }
+}
+
+// MARK: - FullDiskAccessPermission
+
+/// Full Disk Access, which the Focus indicator needs on macOS 27: the Focus state lives in
+/// `~/Library/DoNotDisturb`, which is behind it (see `FocusWatcher27`).
+///
+/// Optional, and offered only in the Advanced settings pane, not on first launch. macOS has no
+/// prompt for it, so the request is just opening the list in System Settings.
+final class FullDiskAccessPermission: Permission {
+    init() {
+        super.init(
+            title: "Full Disk Access",
+            details: ["Show which Focus is on while items are hidden."],
+            isRequired: false,
+            settingsURL: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"),
+            check: {
+                if #available(macOS 27.0, *) {
+                    return FocusWatcher27.canReadFocusState()
+                }
+                return false
+            },
+            request: {}
         )
     }
 }

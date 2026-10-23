@@ -32,6 +32,12 @@ final class AppPermissions: ObservableObject {
     /// The permission for Screen Recording features.
     let screenRecording = ScreenRecordingPermission()
 
+    /// The permission for reading the Focus state, for the Focus indicator on macOS 27.
+    ///
+    /// Not part of ``allPermissions``: it is optional, offered only in the Advanced settings pane,
+    /// and must not hold up the first-launch permissions window or ``permissionsState``.
+    let fullDiskAccess = FullDiskAccessPermission()
+
     /// The state of the app's granted permissions.
     @Published private(set) var permissionsState: PermissionsState = .missing
 
@@ -41,6 +47,15 @@ final class AppPermissions: ObservableObject {
     /// The permissions required for full app functionality.
     var allPermissions: [Permission] {
         [accessibility, screenRecording]
+    }
+
+    /// The permissions listed in the Advanced settings pane: those of the first-launch window,
+    /// plus Full Disk Access on macOS 27, where the Focus indicator uses it.
+    var settingsPermissions: [Permission] {
+        if #available(macOS 27.0, *) {
+            return allPermissions + [fullDiskAccess]
+        }
+        return allPermissions
     }
 
     /// The permissions required for basic app functionality.
@@ -72,7 +87,7 @@ final class AppPermissions: ObservableObject {
     /// Stops running all permissions checks.
     func stopAllChecks() {
         logger.info("Stopping all permissions checks")
-        for permission in allPermissions {
+        for permission in allPermissions + [fullDiskAccess] {
             permission.stopCheck()
         }
     }

@@ -900,7 +900,11 @@ extension HIDEventManager {
                 ItemHitTest27.Item(frame: item.bounds, ownerPID: item.ownerPID, isOnScreen: item.isOnScreen)
             }
             let systemFrames = MenuBarItemProvider27.systemItemFrames()
-                + [MenuBarItemProvider27.overflowButtonFrame(), CaptureIndicatorPanel27.indicatorFrame()].compactMap { $0 }
+                + [
+                    MenuBarItemProvider27.overflowButtonFrame(),
+                    CaptureIndicatorPanel27.indicatorFrame(),
+                    FocusIndicatorPanel27.indicatorFrame(),
+                ].compactMap { $0 }
             return ItemHitTest27.isInsideItem(
                 point: mouseLocation,
                 items: items,
@@ -961,7 +965,11 @@ extension HIDEventManager {
             ItemHitTest27.Item(frame: item.bounds, ownerPID: item.ownerPID, isOnScreen: item.isOnScreen)
         }
         let systemFrames = MenuBarItemProvider27.systemItemFrames()
-            + [MenuBarItemProvider27.overflowButtonFrame(), CaptureIndicatorPanel27.indicatorFrame()].compactMap { $0 }
+            + [
+                MenuBarItemProvider27.overflowButtonFrame(),
+                CaptureIndicatorPanel27.indicatorFrame(),
+                FocusIndicatorPanel27.indicatorFrame(),
+            ].compactMap { $0 }
         return ItemHitTest27.isInsideItemsArea(
             point: mouseLocation,
             displayBounds: CGDisplayBounds(screen.displayID),

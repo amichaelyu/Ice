@@ -49,21 +49,36 @@ enum StuckOverflow27 {
         return underNotch || stacked
     }
 
-    /// The entries in a bar's window that belong to applications rather than to the system group.
+    /// How many of each bar's entries belong to applications rather than to the system group.
     ///
     /// MenuBarAgent lists an application's item on the bar it is drawn on with its frame, and on
     /// the other display's bar as an entry with no geometry at all (measured on macOS 27.0). Both
-    /// count: what matters is that the bar lists the item, not where it says it is. The system
-    /// group — battery, Wi-Fi, Control Centre, clock — sits at the right end, and is left out by
-    /// taking only what lies left of it.
+    /// count: what matters is that the bar lists the item, not where it says it is.
     ///
-    /// An item folded away beside the notch is listed by neither account, which is what makes a
-    /// bar missing items recognisable at all.
-    static func applicationEntryCount(childFrames: [CGRect], systemItemFrames: [CGRect]) -> Int {
-        guard let systemEdge = systemItemFrames.map(\.minX).min() else {
-            return childFrames.count
+    /// The system group — battery, Wi-Fi, Control Centre, clock — is not told apart by geometry on
+    /// every bar, though. On the bar that is not active some of its items come back without a
+    /// frame too: measured on macOS 27.0.1 on 2026-10-22, the external display's bar listed the
+    /// same ten entries as the active one, but only four system items with geometry and six
+    /// entries without, Wi-Fi and battery among them. Counting every entry with no geometry as an
+    /// application's read that bar as six application items against the active bar's four, and
+    /// the notched bar was declared stuck while it was not. So the system group's size is taken
+    /// from the bar that has geometry for all of it — the most system items any bar shows — and
+    /// subtracted from every bar's total.
+    ///
+    /// An item folded away beside the notch is listed by neither bar, which is what makes a bar
+    /// missing items recognisable at all.
+    ///
+    /// - Parameter bars: For each bar, how many entries its window lists, and how many of them
+    ///   have the frame of a system item.
+    /// - Returns: The application items each bar lists, or nothing when no bar shows a system
+    ///   group to measure by.
+    static func applicationEntryCounts<Bar: Hashable>(
+        bars: [Bar: (entries: Int, systemItemsWithGeometry: Int)]
+    ) -> [Bar: Int] {
+        guard let systemItems = bars.values.map(\.systemItemsWithGeometry).max(), systemItems > 0 else {
+            return [:]
         }
-        return childFrames.filter { $0.width < 1 || $0.minX < systemEdge - 1 }.count
+        return bars.mapValues { max($0.entries - systemItems, 0) }
     }
 
     /// Whether a bar draws fewer application items than there are to draw.
@@ -73,5 +88,36 @@ enum StuckOverflow27 {
     /// folded away are simply absent from the bar's window, while the other display draws them.
     static func isStuck(drawnApplicationItems: Int, expectedApplicationItems: Int) -> Bool {
         expectedApplicationItems > 0 && drawnApplicationItems < expectedApplicationItems
+    }
+
+    /// Whether a notched bar is stuck, from everything read about it.
+    ///
+    /// A bar that lists an overflow button of its own has folded its items away but left them a
+    /// click away, which is macOS behaving as it means to, so it is never stuck whatever the
+    /// counts say. The button used to be looked for only on the active bar, and the notched
+    /// display's « went unseen while it was the other one: Settings asked for relaunches on a bar
+    /// overflowing normally (seen on macOS 27.0.1, built-in display as the main one, with an
+    /// external one beside it). Otherwise the bar is compared with the fullest other bar, and
+    /// with no other bar the geometry is all there is.
+    ///
+    /// - Parameters:
+    ///   - listsOverflowButton: Whether the bar's own window lists an overflow button.
+    ///   - listedApplicationItems: How many application items the bar lists.
+    ///   - mostListedElsewhere: The most any other display's bar lists, or `nil` with no other bar.
+    ///   - geometryLooksStuck: The single-display test, see
+    ///     ``isStuck(visibleItemFrames:chevronFrame:notchSpan:)``. Only asked when it decides.
+    static func isNotchedBarStuck(
+        listsOverflowButton: Bool,
+        listedApplicationItems: Int,
+        mostListedElsewhere: Int?,
+        geometryLooksStuck: () -> Bool
+    ) -> Bool {
+        if listsOverflowButton {
+            return false
+        }
+        if let mostListedElsewhere {
+            return isStuck(drawnApplicationItems: listedApplicationItems, expectedApplicationItems: mostListedElsewhere)
+        }
+        return geometryLooksStuck()
     }
 }

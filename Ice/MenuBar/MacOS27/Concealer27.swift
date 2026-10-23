@@ -22,7 +22,19 @@ final class Concealer27: ObservableObject {
     private weak var appState: AppState?
     private var observers = [NSObjectProtocol]()
     private var applyTask: Task<Void, Never>?
-    private var suspendedUntil: ContinuousClock.Instant?
+    private var suspendedUntil: ContinuousClock.Instant? {
+        didSet {
+            if isSuspended != (suspendedUntil != nil) {
+                isSuspended = suspendedUntil != nil
+            }
+        }
+    }
+
+    /// Whether concealment is lifted for a moment, so a click can reach a system item.
+    ///
+    /// The revealed items push the run leftwards, so Ice's own indicators leave the bar for the
+    /// length of it rather than stand over an item, and come back once it is over.
+    @Published private(set) var isSuspended = false
 
     /// When concealment last changed, which is when the bar last started moving.
     private var lastChangeAt = ContinuousClock.now
@@ -145,6 +157,25 @@ final class Concealer27: ObservableObject {
             }
             .store(in: &cancellables)
         appState.captureIndicatorPanel27.performSetup(watcher: appState.captureWatcher27, concealer: self)
+        appState.focusIndicatorPanel27.performSetup(
+            watcher: appState.focusWatcher27,
+            concealer: self,
+            captureIndicator: appState.captureIndicatorPanel27
+        )
+        // Turning the Focus indicator off stops the watching at once, rather than at the next
+        // concealment change; turning it on starts it if anything is hidden.
+        appState.settings.advanced.$showFocusIndicator
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak appState] show in
+                MainActor.assumeIsolated {
+                    guard let self, let appState else {
+                        return
+                    }
+                    appState.focusWatcher27.setWatching(self.isConcealing && show)
+                }
+            }
+            .store(in: &cancellables)
         update()
     }
 
@@ -169,6 +200,8 @@ final class Concealer27: ObservableObject {
         // The devices are only worth asking about while something is hidden: macOS draws its own
         // camera and microphone indicator the rest of the time.
         appState.captureWatcher27.setWatching(isConcealing && appState.settings.advanced.showCaptureIndicator)
+        // Likewise the Focus: macOS draws its own Focus item whenever nothing is hidden.
+        appState.focusWatcher27.setWatching(isConcealing && appState.settings.advanced.showFocusIndicator)
         defer { MenuBarItemProvider27.setConcealedPIDs(concealedPIDs) }
         concealedPIDs = Set(applications.compactMap { application in
             guard let bundleID = application.bundleIdentifier, concealed.contains(bundleID) else {
@@ -253,7 +286,8 @@ final class Concealer27: ObservableObject {
             counts[screen.displayID] = MenuBarItemProvider27.applicationEntryCount(for: screen.displayID)
         }
         let described = NSScreen.screens.map { screen in
-            "\(screen.displayID)\(screen.hasNotch ? " notched" : "") lists \(counts[screen.displayID].map(String.init) ?? "nothing")"
+            let button = MenuBarItemProvider27.overflowButtonFrame(for: screen.displayID) == nil ? "" : " and «"
+            return "\(screen.displayID)\(screen.hasNotch ? " notched" : "") lists \(counts[screen.displayID].map(String.init) ?? "nothing")\(button)"
         }.joined(separator: ", ")
         logger.debug("Stuck check: \(applicationItems.count, privacy: .public) items to draw; \(described, privacy: .public)")
         let chevron = MenuBarItemProvider27.overflowButtonFrame()
@@ -266,26 +300,30 @@ final class Concealer27: ObservableObject {
             // is macOS behaving as it means to. Measured on 2026-10-02, the counts do not trip on
             // that anyway — a bar with the button listed 20 against the other display's 19, since
             // the button is one of its entries — but the state is worth distinguishing all the
-            // same (raised by @jasonsmithio on jordanbaird/Ice#995).
-            if let chevron, displayBounds.intersects(chevron) {
-                return false
-            }
-            if let elsewhere = counts.filter({ $0.key != screen.displayID }).values.max() {
-                return StuckOverflow27.isStuck(drawnApplicationItems: listed, expectedApplicationItems: elsewhere)
-            }
-            // The only bar there is. With nothing to compare it against, the geometry is all that
-            // is left: an item under the notch, or one stacked on its neighbour, with no button to
-            // reach either. It cannot see a bar that lost its items outright, but it is what the
-            // check had before counting, and a MacBook on its own would otherwise go unwatched.
-            return StuckOverflow27.isStuck(
-                visibleItemFrames: applicationItems.filter { displayBounds.intersects($0.bounds) }.map(\.bounds),
-                chevronFrame: chevron,
-                notchSpan: StuckOverflow27.notchSpan(
-                    displayBounds: displayBounds,
-                    leftAreaWidth: screen.auxiliaryTopLeftArea?.width,
-                    rightAreaWidth: screen.auxiliaryTopRightArea?.width
+            // same (raised by @jasonsmithio on jordanbaird/Ice#995). The bar's own window is asked
+            // first: the button under `AXExtrasMenuBar` is the active bar's alone.
+            let ownChevron = MenuBarItemProvider27.overflowButtonFrame(for: screen.displayID)
+            let activeChevron = chevron.flatMap { displayBounds.intersects($0) ? $0 : nil }
+            return StuckOverflow27.isNotchedBarStuck(
+                listsOverflowButton: ownChevron != nil || activeChevron != nil,
+                listedApplicationItems: listed,
+                mostListedElsewhere: counts.filter { $0.key != screen.displayID }.values.max()
+            ) {
+                // The only bar there is. With nothing to compare it against, the geometry is all
+                // that is left: an item under the notch, or one stacked on its neighbour, with no
+                // button to reach either. It cannot see a bar that lost its items outright, but it
+                // is what the check had before counting, and a MacBook on its own would otherwise
+                // go unwatched.
+                StuckOverflow27.isStuck(
+                    visibleItemFrames: applicationItems.filter { displayBounds.intersects($0.bounds) }.map(\.bounds),
+                    chevronFrame: chevron,
+                    notchSpan: StuckOverflow27.notchSpan(
+                        displayBounds: displayBounds,
+                        leftAreaWidth: screen.auxiliaryTopLeftArea?.width,
+                        rightAreaWidth: screen.auxiliaryTopRightArea?.width
+                    )
                 )
-            )
+            }
         }
         var applications = [String: String]()
         for item in applicationItems {
@@ -554,6 +592,99 @@ final class Concealer27: ObservableObject {
         update()
         Task { [weak self] in
             await self?.appState?.itemManager.cacheItemsRegardless()
+        }
+    }
+
+    /// Writes the sections Ice held before macOS 27 into the saved layout, once.
+    ///
+    /// Nothing recorded them before: an item's section was where it sat between Ice's dividers.
+    /// On 27 that order no longer means anything, and an application missing from the layout is
+    /// visible, so without this an upgrade left Ice hiding nothing until the whole layout was
+    /// rebuilt by hand (jordanbaird/Ice#1006). The positions AppKit saved for each item survive
+    /// the upgrade (see ``layoutFromPreferredPositions()``); a user who has arranged a layout of
+    /// their own keeps it.
+    func seedLayoutIfNeeded() {
+        guard
+            !Defaults.bool(forKey: .macOS27LayoutSeeded),
+            savedLayout.isEmpty,
+            !isConcealing,
+            let seeded = layoutFromPreferredPositions()
+        else {
+            return
+        }
+        Defaults.set(true, forKey: .macOS27LayoutSeeded)
+        Defaults.set(seeded.mapValues(\.rawValue), forKey: .macOS27Layout)
+        let described = seeded
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value.rawValue)" }
+            .joined(separator: " ")
+        logger.notice("Took the macOS 27 layout from the positions saved before macOS 27: \(described, privacy: .public)")
+        update()
+    }
+
+    /// Applications whose saved positions are not theirs to give: the system items they host
+    /// cannot be hidden on macOS 27, and concealing the process would take the rest with it.
+    /// Control Centre keeps positions for every module it ever showed, its keyboard brightness
+    /// at 5673 here, which would have put it in Always Hidden.
+    private static let unseededBundleIDs: Set<String> = [
+        Constants.bundleIdentifier,
+        MenuBarItemProvider27.menuBarAgentBundleID,
+        "com.apple.controlcenter",
+        "com.apple.systemuiserver",
+    ]
+
+    /// The layout the positions AppKit saved before macOS 27 describe, or `nil` without them.
+    ///
+    /// Ice's hidden divider must have a position of its own: one that never left the 1 Ice
+    /// writes before creating it (see `ControlItemDefaults`) was never placed, and would put
+    /// every other application behind it.
+    private func layoutFromPreferredPositions() -> [String: MacOS27Section]? {
+        guard
+            let hiddenDivider = ControlItemDefaults[.preferredPosition, ControlItem.Identifier.hidden.rawValue],
+            hiddenDivider > 1
+        else {
+            return nil
+        }
+        let alwaysHiddenEnabled = appState?.menuBarManager.section(withName: .alwaysHidden)?.isEnabled ?? false
+        let alwaysHiddenDivider = alwaysHiddenEnabled
+            ? ControlItemDefaults[.preferredPosition, ControlItem.Identifier.alwaysHidden.rawValue]
+            : nil
+        var positions = [String: [CGFloat]]()
+        for application in NSWorkspace.shared.runningApplications {
+            guard
+                let bundleID = application.bundleIdentifier,
+                !Self.unseededBundleIDs.contains(bundleID),
+                positions[bundleID] == nil
+            else {
+                continue
+            }
+            let saved = Self.preferredPositions(bundleID: bundleID)
+            if !saved.isEmpty {
+                positions[bundleID] = saved
+            }
+        }
+        guard !positions.isEmpty else {
+            return nil
+        }
+        return SectionLayout27.seededLayout(
+            preferredPositions: positions,
+            hiddenDivider: hiddenDivider,
+            alwaysHiddenDivider: alwaysHiddenDivider
+        )
+    }
+
+    /// The status item positions AppKit saved in an application's preferences.
+    ///
+    /// Only the application's own domain is read. A sandboxed application keeps its preferences
+    /// in its container, which this does not look in: reading another application's container
+    /// asks the user for access to other applications' data, and a prompt at first launch is
+    /// worse than a sandboxed application left visible until the user moves it.
+    private static func preferredPositions(bundleID: String) -> [CGFloat] {
+        let prefix = "NSStatusItem Preferred Position "
+        let domain = bundleID as CFString
+        let keys = CFPreferencesCopyKeyList(domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? [String] ?? []
+        return keys.filter { $0.hasPrefix(prefix) }.compactMap { key in
+            (CFPreferencesCopyAppValue(key as CFString, domain) as? NSNumber).map { CGFloat($0.doubleValue) }
         }
     }
 

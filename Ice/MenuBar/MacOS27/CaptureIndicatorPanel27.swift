@@ -24,6 +24,7 @@ import SwiftUI
 final class CaptureIndicatorPanel27: NSPanel {
     private let logger = Logger(category: "CaptureIndicatorPanel27")
     private weak var appState: AppState?
+    private weak var watcher: CaptureWatcher27?
     private var cancellables = Set<AnyCancellable>()
     private var hostingView: NSHostingView<CaptureIndicatorView>?
 
@@ -32,6 +33,9 @@ final class CaptureIndicatorPanel27: NSPanel {
 
     /// Counts the placements asked for, so one overtaken by a later one is dropped.
     private var placementGeneration = 0
+
+    /// Whether the concealment is lifted for a click on the indicator, which keeps it off the bar.
+    private var isLifting = false
 
     /// How wide the indicator is drawn.
     private static let width: CGFloat = 36
@@ -49,8 +53,18 @@ final class CaptureIndicatorPanel27: NSPanel {
         frameLock.withLock { shownFrame }
     }
 
-    private static func setIndicatorFrame(_ frame: CGRect?) {
-        frameLock.withLock { shownFrame = frame }
+    /// Sends where the indicator is drawn whenever that changes, so Ice's Focus indicator can
+    /// keep to the left of it.
+    let frameChanges = PassthroughSubject<CGRect?, Never>()
+
+    private func setIndicatorFrame(_ frame: CGRect?) {
+        let previous = Self.frameLock.withLock {
+            defer { Self.shownFrame = frame }
+            return Self.shownFrame
+        }
+        if previous != frame {
+            frameChanges.send(frame)
+        }
     }
 
     init(appState: AppState) {
@@ -76,6 +90,7 @@ final class CaptureIndicatorPanel27: NSPanel {
     /// The watcher reads the devices every couple of seconds and republishes either way, so the
     /// indicator follows the items along the bar as they come and go without a timer of its own.
     func performSetup(watcher: CaptureWatcher27, concealer: Concealer27) {
+        self.watcher = watcher
         watcher.$kind
             .receive(on: DispatchQueue.main)
             .sink { [weak self] kind in
@@ -84,10 +99,12 @@ final class CaptureIndicatorPanel27: NSPanel {
                 }
             }
             .store(in: &cancellables)
-        // An item shown for a moment appears where the indicator stands, so the indicator leaves
-        // at once rather than on the watcher's next reading.
+        // An item shown for a moment appears where the indicator stands, and a lift reflows the
+        // bar under it, so the indicator leaves at once rather than on the watcher's next
+        // reading, and comes back as soon as either is over.
         concealer.$isShowingTemporarily
-            .removeDuplicates()
+            .combineLatest(concealer.$isSuspended)
+            .removeDuplicates { $0 == $1 }
             .receive(on: DispatchQueue.main)
             .sink { [weak self, weak watcher] _ in
                 MainActor.assumeIsolated {
@@ -101,7 +118,11 @@ final class CaptureIndicatorPanel27: NSPanel {
     private func update(kind: CaptureIndicator27.Kind?) {
         guard
             let kind,
+            !isLifting,
             let appState,
+            // Off the bar while concealment is lifted, for this indicator's click or any other:
+            // the items revealed reflow the bar under it.
+            !appState.concealer27.isSuspended,
             appState.settings.advanced.showCaptureIndicator,
             appState.concealer27.isConcealing,
             // Out of the way while an item is shown for a moment: that item is drawn where the
@@ -113,7 +134,7 @@ final class CaptureIndicatorPanel27: NSPanel {
             if isVisible {
                 orderOut(nil)
             }
-            Self.setIndicatorFrame(nil)
+            setIndicatorFrame(nil)
             return
         }
         if let remaining = appState.concealer27.timeUntilSettled() {
@@ -167,7 +188,7 @@ final class CaptureIndicatorPanel27: NSPanel {
             self.hostingView = hostingView
         }
         setFrame(frame, display: true)
-        Self.setIndicatorFrame(frame)
+        setIndicatorFrame(frame)
         if !isVisible {
             orderFrontRegardless()
         }
@@ -189,7 +210,13 @@ final class CaptureIndicatorPanel27: NSPanel {
             return
         }
         logger.notice("Opening the capture controls from the indicator")
+        // Off the bar before the lift begins. The revealed items push the run leftwards, and the
+        // indicator left where it stood was drawn over one of them for a frame or two (seen on
+        // macOS 27.0.1 in a 4 fps screenshot burst). It comes back once concealment is restored
+        // and the bar has settled, through the same wait-and-read path as any placement.
+        withdrawForLift()
         Task { [weak self] in
+            defer { self?.endLift() }
             await appState.concealer27.suspendReleased(for: .milliseconds(900))
             for _ in 0..<14 {
                 _ = await MenuBarItemProvider27.items()
@@ -209,6 +236,23 @@ final class CaptureIndicatorPanel27: NSPanel {
             }
             appState.concealer27.resumeConcealing()
         }
+    }
+
+    /// Takes the indicator off the bar for a lift, dropping any placement still on its way.
+    private func withdrawForLift() {
+        isLifting = true
+        placementGeneration += 1
+        if isVisible {
+            orderOut(nil)
+        }
+        setIndicatorFrame(nil)
+    }
+
+    /// Lets the indicator back once the lift is over. The placement waits out the bar's movement
+    /// and reads the items afresh before it shows anything.
+    private func endLift() {
+        isLifting = false
+        update(kind: watcher?.kind)
     }
 
     /// The system item the camera and microphone controls belong to.

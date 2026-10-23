@@ -378,6 +378,7 @@ extension MenuBarItemManager {
                 // On macOS 27 the saved layout, not the order on the bar, places items in sections,
                 // so Ice's dividers are not needed. Accessibility reports them only on the display
                 // Ice launched on, and requiring them emptied the cache on the other display.
+                appState.concealer27.seedLayoutIfNeeded()
                 let cache = appState.concealer27.cacheFromSavedLayout(items: items, displayID: displayID)
                 if itemCache != cache {
                     itemCache = cache
