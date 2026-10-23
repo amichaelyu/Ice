@@ -68,20 +68,20 @@ final class NativeAllowListConcealer27 {
     /// (the caller spaces writes out, see `WritePacer27`).
     @discardableResult
     func apply(concealed: Set<String>) throws -> (untracked: Set<String>, wrote: Bool) {
-        var array = try Preferences.read()
-        let states = TrackedApplications27.allowedStates(in: array)
+        let array = try Preferences.read()
+        let entries = TrackedApplications27.entries(in: array)
+        let states = TrackedApplications27.allowedStates(of: entries)
         let recorded = Self.recorded
         let toDisallow = Set(concealed.filter { states[$0] == true })
         let toAllow = recorded.subtracting(concealed)
         // Recorded before the write: should Ice die between the two, the next launch turns these
         // back on, and every one of them was on a moment ago.
         Self.recorded = recorded.union(toDisallow)
-        let disallowed = TrackedApplications27.settingAllowed(false, for: toDisallow, in: array)
-        let allowed = TrackedApplications27.settingAllowed(true, for: toAllow, in: disallowed.array)
-        array = allowed.array
+        let disallowed = TrackedApplications27.settingAllowed(false, for: toDisallow, in: array, entries: entries)
+        let allowed = TrackedApplications27.settingAllowed(true, for: toAllow, in: disallowed.array, entries: entries)
         let wrote = !disallowed.changed.isEmpty || !allowed.changed.isEmpty
         if wrote {
-            try Preferences.write(array)
+            try Preferences.write(allowed.array)
             if !disallowed.changed.isEmpty {
                 logger.notice("Disallowed in the menu bar: \(disallowed.changed.sorted().joined(separator: " "), privacy: .public)")
             }
@@ -92,7 +92,14 @@ final class NativeAllowListConcealer27 {
         // What stays recorded is what is concealed and still off. One the user turned back on in
         // System Settings meanwhile is turned off again above, since it is still meant to be
         // hidden; one MenuBarAgent forgot is no longer Ice's to restore.
-        let final = TrackedApplications27.allowedStates(in: array)
+        // A changed bundle had every one of its entries set, so it now reads as set.
+        var final = states
+        for bundleID in disallowed.changed {
+            final[bundleID] = false
+        }
+        for bundleID in allowed.changed {
+            final[bundleID] = true
+        }
         Self.recorded = Self.recorded.intersection(concealed).filter { final[$0] == false }
         return (concealed.filter { states[$0] == nil }, wrote)
     }
@@ -119,10 +126,27 @@ final class NativeAllowListConcealer27 {
         }
     }
 
-    /// The applications Ice has turned off and not yet back on.
+    /// ``recorded`` as last read or written, shared by every instance: the app delegate releases
+    /// through one of its own.
+    private static var cachedRecord: Set<String>?
+
+    /// The applications Ice has turned off and not yet back on, written through only on a change.
     private static var recorded: Set<String> {
-        get { Set(Defaults.stringArray(forKey: .macOS27NativeDisallowed) ?? []) }
-        set { Defaults.set(newValue.sorted(), forKey: .macOS27NativeDisallowed) }
+        get {
+            if let cachedRecord {
+                return cachedRecord
+            }
+            let stored = Set(Defaults.stringArray(forKey: .macOS27NativeDisallowed) ?? [])
+            cachedRecord = stored
+            return stored
+        }
+        set {
+            guard newValue != recorded else {
+                return
+            }
+            cachedRecord = newValue
+            Defaults.set(newValue.sorted(), forKey: .macOS27NativeDisallowed)
+        }
     }
 }
 

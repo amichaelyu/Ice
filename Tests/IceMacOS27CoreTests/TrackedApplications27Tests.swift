@@ -85,6 +85,20 @@ struct TrackedApplications27Tests {
         #expect(same(unchanged.array, fixture))
     }
 
+    @Test("Entries read once serve several changes")
+    func entriesReadOnce() {
+        let entries = TrackedApplications27.entries(in: fixture)
+        #expect(TrackedApplications27.allowedStates(of: entries) == TrackedApplications27.allowedStates(in: fixture))
+        let hidden = TrackedApplications27.settingAllowed(false, for: ["net.matthewpalmer.Horo"], in: fixture, entries: entries)
+        #expect(hidden.changed == ["net.matthewpalmer.Horo"])
+        // The entries still say Horo is allowed; the list they were read from no longer does.
+        let again = TrackedApplications27.settingAllowed(false, for: ["net.matthewpalmer.Horo"], in: hidden.array, entries: entries)
+        #expect(again.changed.isEmpty)
+        let shown = TrackedApplications27.settingAllowed(true, for: ["net.matthewpalmer.Horo"], in: hidden.array, entries: entries)
+        #expect(shown.changed == ["net.matthewpalmer.Horo"])
+        #expect(same(shown.array, fixture))
+    }
+
     @Test("An unpaired element at the end is kept and not read")
     func unpaired() {
         let odd = fixture + [Self.bundleKey("com.trailing.key")]

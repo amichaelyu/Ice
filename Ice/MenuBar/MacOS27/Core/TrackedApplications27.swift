@@ -61,8 +61,13 @@ enum TrackedApplications27 {
     /// Should a bundle appear twice, which MenuBarAgent has not been seen to write, it counts as
     /// allowed if either entry is.
     static func allowedStates(in array: [Any]) -> [String: Bool] {
+        allowedStates(of: entries(in: array))
+    }
+
+    /// The current `isAllowed` of each bundle, from entries already read from the list.
+    static func allowedStates(of entries: [Entry]) -> [String: Bool] {
         var states = [String: Bool]()
-        for entry in entries(in: array) {
+        for entry in entries {
             guard let bundleID = entry.bundleID, let isAllowed = entry.isAllowed else {
                 continue
             }
@@ -77,18 +82,27 @@ enum TrackedApplications27 {
     /// `isAllowed`; a value that is already as asked, or that has no `isAllowed` at all, is left
     /// alone. Everything else, the order included, comes back as it was.
     static func settingAllowed(_ allowed: Bool, for bundleIDs: Set<String>, in array: [Any]) -> (array: [Any], changed: Set<String>) {
+        settingAllowed(allowed, for: bundleIDs, in: array, entries: entries(in: array))
+    }
+
+    /// ``settingAllowed(_:for:in:)`` with the entries already read from the list.
+    ///
+    /// Only their keys and positions are used, which a change of `isAllowed` leaves as they were,
+    /// so entries read before an earlier change to the same list still hold.
+    static func settingAllowed(_ allowed: Bool, for bundleIDs: Set<String>, in array: [Any], entries: [Entry]) -> (array: [Any], changed: Set<String>) {
         guard !bundleIDs.isEmpty else {
             return (array, [])
         }
         var result = array
         var changed = Set<String>()
-        for entry in entries(in: array) {
+        for entry in entries {
             guard
                 let bundleID = entry.bundleID,
                 bundleIDs.contains(bundleID),
-                let isAllowed = entry.isAllowed,
-                isAllowed != allowed,
-                var value = array[entry.valueIndex] as? [String: Any]
+                entry.valueIndex < array.count,
+                var value = array[entry.valueIndex] as? [String: Any],
+                let isAllowed = value["isAllowed"] as? Bool,
+                isAllowed != allowed
             else {
                 continue
             }
