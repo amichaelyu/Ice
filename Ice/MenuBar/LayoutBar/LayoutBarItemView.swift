@@ -28,6 +28,10 @@ final class LayoutBarItemView: NSView {
     /// layout view.
     var oldContainerInfo: (container: LayoutBarContainer, index: Int)?
 
+    /// The container the view was dragged out of, so it can take the item cache again once
+    /// the drag is over (see `draggingSession(_:endedAt:operation:)`).
+    private weak var dragOriginContainer: LayoutBarContainer?
+
     /// A Boolean value that indicates whether the item view is currently inside a container.
     var hasContainer = false
 
@@ -182,6 +186,7 @@ extension LayoutBarItemView: NSDraggingSource {
         // aren't arranged during a dragging session
         if let container = superview as? LayoutBarContainer {
             container.canSetArrangedViews = false
+            dragOriginContainer = container
         }
 
         // prevent the dragging image from animating back to its original location
@@ -197,6 +202,15 @@ extension LayoutBarItemView: NSDraggingSource {
         defer {
             // always remove container info at the end of a session
             oldContainerInfo = nil
+            if #available(macOS 27.0, *), let container = dragOriginContainer {
+                // Only the container dropped on is let go by the drop. On macOS 27 a drop moves
+                // the whole application, and the row it left kept the application's other items
+                // — Stats has four — because it went on ignoring the cache that moved them.
+                DispatchQueue.main.async {
+                    container.canSetArrangedViews = true
+                }
+            }
+            dragOriginContainer = nil
         }
 
         // since the session's `animatesToStartingPositionsOnCancelOrFail` property was
