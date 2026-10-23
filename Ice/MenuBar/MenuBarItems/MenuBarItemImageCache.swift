@@ -115,28 +115,28 @@ final class MenuBarItemImageCache: ObservableObject {
         if let appState {
             Publishers.Merge3(
                 // Update every 3 seconds at minimum.
-                Timer.publish(every: 3, on: .main, in: .default).autoconnect().replace(with: ()),
+                Timer.publish(every: 3, on: .main, in: .default).autoconnect().replace(with: true),
 
                 // Update when the active space or screen parameters change.
                 Publishers.Merge(
                     NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.activeSpaceDidChangeNotification),
                     NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
                 )
-                .replace(with: ()),
+                .replace(with: false),
 
                 // Update when the average menu bar color or cached items change.
                 Publishers.Merge(
-                    appState.menuBarManager.$averageColorInfo.removeDuplicates().replace(with: ()),
-                    appState.itemManager.$itemCache.removeDuplicates().replace(with: ())
+                    appState.menuBarManager.$averageColorInfo.removeDuplicates().replace(with: false),
+                    appState.itemManager.$itemCache.removeDuplicates().replace(with: false)
                 )
             )
             .throttle(for: 0.5, scheduler: DispatchQueue.main, latest: false)
-            .sink { [weak self] in
+            .sink { [weak self] isPeriodic in
                 guard let self else {
                     return
                 }
                 Task {
-                    await self.updateCache()
+                    await self.updateCache(isPeriodic: isPeriodic)
                 }
             }
             .store(in: &c)
@@ -300,8 +300,9 @@ final class MenuBarItemImageCache: ObservableObject {
     // MARK: Update Cache
 
     /// Updates the cache for the given sections, without checking whether
-    /// caching is necessary.
-    func updateCacheWithoutChecks(sections: [MenuBarSection.Name]) async {
+    /// caching is necessary. On macOS 27, `capturesBar` false skips capturing
+    /// the menu bar and only photographs items that have no image.
+    func updateCacheWithoutChecks(sections: [MenuBarSection.Name], capturesBar: Bool = true) async {
         guard
             let appState,
             await appState.hasPermission(.screenRecording)
@@ -316,18 +317,20 @@ final class MenuBarItemImageCache: ObservableObject {
                 items += await appState.itemManager.itemCache.managedItems(for: section)
             }
             let store = await appState.itemImageStore27
-            await store.captureActiveMenuBar(appState: appState)
-            await store.photographMissing(items: items, appState: appState)
-            var newImages = [MenuBarItemTag: CapturedImage]()
-            var standIns = [MenuBarItemTag: CapturedImage]()
-            for item in items {
-                if let image = await store.image(for: item) {
-                    newImages[item.tag] = image
-                } else if !item.isControlItem, let standIn = await store.standInImage(for: item) {
-                    standIns[item.tag] = standIn
-                }
+            if capturesBar {
+                await store.captureActiveMenuBar(appState: appState)
             }
-            await MainActor.run { [newImages, standIns] in
+            await store.photographMissing(items: items, appState: appState)
+            await MainActor.run { [items] in
+                var newImages = [MenuBarItemTag: CapturedImage]()
+                var standIns = [MenuBarItemTag: CapturedImage]()
+                for item in items {
+                    if let image = store.image(for: item) {
+                        newImages[item.tag] = image
+                    } else if !item.isControlItem, let standIn = store.standInImage(for: item) {
+                        standIns[item.tag] = standIn
+                    }
+                }
                 var merged = images.merging(newImages) { (_, new) in new }
                 // A stand-in never takes the place of a photograph taken earlier.
                 for (tag, standIn) in standIns where merged[tag]?.isStandIn ?? true {
@@ -368,23 +371,24 @@ final class MenuBarItemImageCache: ObservableObject {
         }
     }
 
-    /// Updates the cache for the given sections, if necessary.
-    func updateCache(sections: [MenuBarSection.Name]) async {
+    /// Updates the cache for the given sections, if necessary. A periodic update
+    /// while only the Ice Bar is open does not capture the menu bar on macOS 27:
+    /// the Ice Bar's items are concealed, so a capture would find none of them.
+    func updateCache(sections: [MenuBarSection.Name], isPeriodic: Bool = false) async {
         guard let appState else {
             return
         }
 
         let isIceBarPresented = await appState.navigationState.isIceBarPresented
         let isSearchPresented = await appState.navigationState.isSearchPresented
+        let isLayoutPresented = await MainActor.run {
+            appState.navigationState.isAppFrontmost
+                && appState.navigationState.isSettingsPresented
+                && appState.navigationState.settingsNavigationIdentifier == .menuBarLayout
+        }
 
-        if !isIceBarPresented && !isSearchPresented {
-            guard
-                await appState.navigationState.isAppFrontmost,
-                await appState.navigationState.isSettingsPresented,
-                await appState.navigationState.settingsNavigationIdentifier == .menuBarLayout
-            else {
-                return
-            }
+        guard isIceBarPresented || isSearchPresented || isLayoutPresented else {
+            return
         }
 
         guard await !appState.itemManager.lastMoveOperationOccurred(within: .seconds(1)) else {
@@ -392,11 +396,14 @@ final class MenuBarItemImageCache: ObservableObject {
             return
         }
 
-        await updateCacheWithoutChecks(sections: sections)
+        await updateCacheWithoutChecks(
+            sections: sections,
+            capturesBar: !isPeriodic || isSearchPresented || isLayoutPresented
+        )
     }
 
     /// Updates the cache for all sections, if necessary.
-    func updateCache() async {
+    func updateCache(isPeriodic: Bool = false) async {
         guard let appState else {
             return
         }
@@ -416,7 +423,7 @@ final class MenuBarItemImageCache: ObservableObject {
             sectionsNeedingDisplay.append(section)
         }
 
-        await updateCache(sections: sectionsNeedingDisplay)
+        await updateCache(sections: sectionsNeedingDisplay, isPeriodic: isPeriodic)
     }
 
     // MARK: Cache Failed

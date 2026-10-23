@@ -112,7 +112,10 @@ final class ItemImageStore27 {
 
     /// The stored image of the given item, if there is one.
     func image(for item: MenuBarItem) -> CapturedImage? {
-        let key = item.tag.description
+        image(forKey: item.tag.description)
+    }
+
+    private func image(forKey key: String) -> CapturedImage? {
         if let image = loaded[key] {
             return image
         }
@@ -291,10 +294,13 @@ final class ItemImageStore27 {
                 else {
                     continue
                 }
-                store(glyph, scale: scale, key: item.tag.description, cutFromBar: false)
-                stored += 1
+                if store(glyph, scale: scale, key: item.tag.description, cutFromBar: false) {
+                    stored += 1
+                }
             }
-            writeIndex()
+            if stored > 0 {
+                writeIndex()
+            }
             logger.debug("Stored \(stored, privacy: .public) item images from MenuBarAgent's bar window, skipped \(skipped, privacy: .public) that moved")
             return
         }
@@ -335,10 +341,13 @@ final class ItemImageStore27 {
             else {
                 continue
             }
-            store(glyph, scale: scale, key: item.tag.description, cutFromBar: true)
-            stored += 1
+            if store(glyph, scale: scale, key: item.tag.description, cutFromBar: true) {
+                stored += 1
+            }
         }
-        writeIndex()
+        if stored > 0 {
+            writeIndex()
+        }
         logger.debug("Stored \(stored, privacy: .public) item images from display \(displayID, privacy: .public), skipped \(skipped, privacy: .public) that moved")
     }
 
@@ -646,21 +655,34 @@ final class ItemImageStore27 {
         return false
     }
 
-    private func store(_ image: CGImage, scale: CGFloat, key: String, cutFromBar: Bool) {
+    /// Stores the image unless it is refused or matches the stored one, and returns whether it
+    /// was written.
+    private func store(_ image: CGImage, scale: CGFloat, key: String, cutFromBar: Bool) -> Bool {
         guard !cutFromBar || isUsable(image, key: key) else {
-            return
+            return false
+        }
+        if
+            let existing = self.image(forKey: key),
+            existing.scale == scale,
+            index[key]?.cutFromBar == cutFromBar,
+            existing.cgImage.width == image.width,
+            existing.cgImage.height == image.height,
+            Self.pixels(of: existing.cgImage) == Self.pixels(of: image)
+        {
+            return false
         }
         let fileName = ItemImages27.fileName(forTag: key)
         loaded[key] = CapturedImage(cgImage: image, scale: scale)
         index[key] = IndexEntry(fileName: fileName, scale: scale, cutFromBar: cutFromBar)
         guard let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
-            return
+            return true
         }
         let directory = directory
         Task.detached(priority: .utility) {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try? data.write(to: directory.appendingPathComponent(fileName), options: .atomic)
         }
+        return true
     }
 
     private func writeIndex() {
