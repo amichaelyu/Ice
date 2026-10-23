@@ -601,18 +601,11 @@ extension HIDEventManager {
     // MARK: Handle Show On Hover
 
     private func handleShowOnHover(appState: AppState, screen: NSScreen) {
-        // Make sure the "ShowOnHover" feature is enabled.
-        //
-        // `showOnHoverAllowed` is deliberately *not* checked here. It is cleared
-        // when the user clicks in the menu bar, so that hovering does not
-        // immediately undo a deliberate click, and it is restored only inside
-        // `MenuBarSection.hide()`. Checking it here disabled the hide-on-leave
-        // branch below as well — and that branch is what calls `hide()`. The flag
-        // therefore latched off the only mechanism that could clear it, leaving
-        // the Ice Bar on screen indefinitely: on whatever display it was opened
-        // on, while the user worked on another one. It is checked in the reveal
-        // branch instead, where it belongs.
-        guard appState.settings.general.showOnHover else {
+        // Make sure the "ShowOnHover" feature is enabled and allowed.
+        guard
+            appState.settings.general.showOnHover,
+            appState.menuBarManager.showOnHoverAllowed
+        else {
             return
         }
 
@@ -624,10 +617,7 @@ extension HIDEventManager {
         let delay = appState.settings.advanced.showOnHoverDelay
 
         if hiddenSection.isHidden {
-            guard
-                appState.menuBarManager.showOnHoverAllowed,
-                isMouseInsideEmptyMenuBarSpace(appState: appState, screen: screen)
-            else {
+            guard isMouseInsideEmptyMenuBarSpace(appState: appState, screen: screen) else {
                 return
             }
             if let location = MouseHelpers.locationCoreGraphics {
