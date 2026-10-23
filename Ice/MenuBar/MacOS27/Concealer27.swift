@@ -107,7 +107,7 @@ final class Concealer27: ObservableObject {
     private(set) var concealedPIDs = Set<pid_t>()
 
     /// The section of each application. Applications missing from it are visible.
-    private var savedLayout: [String: MacOS27Section] {
+    var savedLayout: [String: MacOS27Section] {
         let stored = Defaults.dictionary(forKey: .macOS27Layout) as? [String: Int] ?? [:]
         return stored.compactMapValues(MacOS27Section.init(rawValue:))
     }
@@ -284,7 +284,7 @@ final class Concealer27: ObservableObject {
         let layout = SectionLayout27.effectiveLayout(observed: [:], saved: savedLayout, running: running)
         let target = ConcealmentPlanner27.concealedSets(
             layout: layout,
-            state: revealState(appState),
+            state: heldRevealState.map { Self.moreRevealed($0, revealState(appState)) } ?? revealState(appState),
             temporarilyShown: Set(temporarilyShown.keys)
         )
         let concealed = ConcealmentPlanner27.effectivelyConcealed(sets: target)
@@ -955,6 +955,60 @@ final class Concealer27: ObservableObject {
             }
         }
         return cache
+    }
+
+    // MARK: Reveal Hold
+
+    /// The reveal state held while a drop on the bar is read, if one is.
+    private var heldRevealState: RevealState27?
+    private var revealHolds = 0
+
+    /// How much of Ice's hidden content the bar draws right now.
+    var currentRevealState: RevealState27 {
+        guard let appState else {
+            return .allHidden
+        }
+        let state = revealState(appState)
+        return heldRevealState.map { Self.moreRevealed($0, state) } ?? state
+    }
+
+    /// Keeps the bar at least as revealed as it is now until ``releaseRevealHold()``.
+    ///
+    /// A Command-drag on the bar is read once MenuBarAgent has settled it (see
+    /// `HIDEventManager.resolveMenuBarItemDrop27`), and the sections can be told to hide in the
+    /// meantime — by the rehide timer, or a click elsewhere. Hiding then would take the run the
+    /// item was dropped into off the bar before it was read, and conceal the old layout before the
+    /// new section is saved; held, the rehide lands after the section change and hides the new one.
+    /// Holds nest: the bar follows Ice's sections again when the last one is released.
+    func holdReveal() {
+        if revealHolds == 0 {
+            heldRevealState = currentRevealState
+        }
+        revealHolds += 1
+    }
+
+    /// Lets the bar follow Ice's sections again after ``holdReveal()``, and applies them.
+    func releaseRevealHold() {
+        guard revealHolds > 0 else {
+            return
+        }
+        revealHolds -= 1
+        guard revealHolds == 0 else {
+            return
+        }
+        heldRevealState = nil
+        update()
+    }
+
+    private static func moreRevealed(_ lhs: RevealState27, _ rhs: RevealState27) -> RevealState27 {
+        func rank(_ state: RevealState27) -> Int {
+            switch state {
+            case .allHidden: 0
+            case .hiddenRevealed: 1
+            case .allRevealed: 2
+            }
+        }
+        return rank(lhs) >= rank(rhs) ? lhs : rhs
     }
 
     // MARK: Private

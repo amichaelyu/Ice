@@ -33,6 +33,14 @@ final class HIDEventManager: ObservableObject {
     /// swallowing an unrelated one later.
     private var heldBackReleaseUntil: ContinuousClock.Instant?
 
+    /// Where the last left mouse button press landed, in Core Graphics coordinates. A drag
+    /// is reported only once the pointer has moved, so this is the point the item was taken by.
+    private var leftMouseDownLocation: CGPoint?
+
+    /// The application item a Command-drag on the macOS 27 bar picked up, once it is known
+    /// (see `beginMenuBarItemDrag27`).
+    private var menuBarItemDragPick27: Task<PickedMenuBarItem27?, Never>?
+
 
 
     /// A Boolean value that indicates whether the manager is enabled.
@@ -65,6 +73,7 @@ final class HIDEventManager: ObservableObject {
         }
         switch event.type {
         case .leftMouseDown:
+            leftMouseDownLocation = MouseHelpers.locationCoreGraphics
             handleShowOnClick(appState: appState, screen: screen)
             handleSmartRehide(with: event, appState: appState, screen: screen)
         case .rightMouseDown:
@@ -342,8 +351,12 @@ extension HIDEventManager {
     // MARK: Handle Menu Bar Item Drag Stop
 
     private func handleMenuBarItemDragStop() {
-        if isDraggingMenuBarItem {
-            isDraggingMenuBarItem = false
+        guard isDraggingMenuBarItem else {
+            return
+        }
+        isDraggingMenuBarItem = false
+        if #available(macOS 27.0, *), let appState {
+            resolveMenuBarItemDrop27(appState: appState)
         }
     }
 
@@ -360,11 +373,197 @@ extension HIDEventManager {
 
         isDraggingMenuBarItem = true
 
+        if #available(macOS 27.0, *) {
+            // Before the reveal, which moves the items under the point the drag began at.
+            beginMenuBarItemDrag27(appState: appState)
+        }
+
         if appState.settings.advanced.showAllSectionsOnUserDrag {
             for section in appState.menuBarManager.sections {
                 section.controlItem.state = .showSection
             }
+            if #available(macOS 27.0, *) {
+                // On macOS 27 the sections are drawn by the concealer, not by Ice's dividers,
+                // and setting the control items' state directly does not reach it.
+                appState.concealer27.update()
+            }
         }
+    }
+
+    // MARK: Handle Menu Bar Item Drags (macOS 27)
+
+    /// An application item picked up by a Command-drag on the bar.
+    struct PickedMenuBarItem27 {
+        let bundleID: String
+        /// Where the item was when the drag began, to tell a drop back in place.
+        let frame: CGRect?
+    }
+
+    /// Logs what a drag on the bar did to the layout.
+    private static let dragLogger = Logger(subsystem: "com.jordanbaird.Ice", category: "ItemDrag27")
+
+    /// Learns which application's item a Command-drag on the bar has picked up.
+    ///
+    /// macOS 27 keeps its own order: Command-drags reorder items on the bar and MenuBarAgent
+    /// persists the order itself (measured on macOS 27.0.1, 2026-10-23). Ice does not follow the
+    /// item, it only needs to know whose it is, so that the drop can say which section the user
+    /// meant (see ``resolveMenuBarItemDrop27(appState:)``). The point is the one the button went
+    /// down at, tested against the frames Ice cached for the drawn items; only when none of them
+    /// is under it is the bar read again. Ice's own control items and MenuBarAgent's system items
+    /// are never picked: neither belongs to a section.
+    @available(macOS 27.0, *)
+    private func beginMenuBarItemDrag27(appState: AppState) {
+        guard let point = leftMouseDownLocation ?? MouseHelpers.locationCoreGraphics else {
+            menuBarItemDragPick27 = nil
+            return
+        }
+        let concealer = appState.concealer27
+        let displayBounds = Self.displayBounds27(containing: point)
+        let cached = Self.applicationItems27(
+            appState.itemManager.itemCache.managedItems,
+            concealedPIDs: concealer.concealedPIDs,
+            displayBounds: displayBounds
+        )
+        if let hit = Self.applicationItem27(at: point, in: cached) {
+            menuBarItemDragPick27 = Task { PickedMenuBarItem27(bundleID: hit.bundleID, frame: hit.frame) }
+            return
+        }
+        // Read before the reveal begins, which moves the items under the point.
+        let pick = Task { () -> PickedMenuBarItem27? in
+            let fresh = Self.applicationItems27(
+                await MenuBarItemProvider27.items(),
+                concealedPIDs: concealer.concealedPIDs,
+                displayBounds: displayBounds
+            )
+            return Self.applicationItem27(at: point, in: fresh).map { PickedMenuBarItem27(bundleID: $0.bundleID, frame: $0.frame) }
+        }
+        menuBarItemDragPick27 = pick
+    }
+
+    /// Reads where a Command-dragged item came to rest and moves its application to the section
+    /// it was dropped into.
+    ///
+    /// Before macOS 27 dragging an item past Ice's divider was the way to hide it, and users still
+    /// reach for it. On 27 the order is MenuBarAgent's (see ``beginMenuBarItemDrag27(appState:)``),
+    /// so Ice leaves it alone and reads the drop only to learn the section: once the bar has settled
+    /// it reads the items again, finds the dragged application's item nearest the drop, and judges it
+    /// against the runs of items the saved layout puts in each section (see `DropSection27`).
+    ///
+    /// The bar is held as revealed as it was at the drop until the section is saved, so a rehide in
+    /// the meantime neither takes the run away before it is read nor hides the old layout: it lands
+    /// after the change, on the new one.
+    @available(macOS 27.0, *)
+    private func resolveMenuBarItemDrop27(appState: AppState) {
+        let leftMouseDownLocation = leftMouseDownLocation
+        self.leftMouseDownLocation = nil
+        guard
+            let pick = menuBarItemDragPick27,
+            let dropPoint = MouseHelpers.locationCoreGraphics
+        else {
+            menuBarItemDragPick27 = nil
+            return
+        }
+        menuBarItemDragPick27 = nil
+        let concealer = appState.concealer27
+        concealer.holdReveal()
+        let hiddenRevealed = concealer.currentRevealState != .allHidden
+        Task {
+            defer {
+                concealer.releaseRevealHold()
+            }
+            guard let picked = await pick.value else {
+                return
+            }
+            // The item lands once MenuBarAgent has finished moving the bar, after any reveal.
+            try? await Task.sleep(for: (concealer.timeUntilSettled() ?? .zero) + .milliseconds(150))
+            let displayBounds = Self.displayBounds27(containing: dropPoint)
+            let items = Self.applicationItems27(
+                await MenuBarItemProvider27.items(),
+                concealedPIDs: concealer.concealedPIDs,
+                displayBounds: displayBounds
+            )
+            let layout = concealer.savedLayout
+            var runs = DropSection27.Runs()
+            var ownFrames = [CGRect]()
+            for item in items {
+                if item.bundleID == picked.bundleID {
+                    ownFrames.append(item.frame)
+                    continue
+                }
+                switch layout[item.bundleID] ?? .visible {
+                case .visible: runs.visible.append(item.frame)
+                case .hidden: runs.hidden.append(item.frame)
+                case .alwaysHidden: runs.alwaysHidden.append(item.frame)
+                }
+            }
+            let current = layout[picked.bundleID] ?? .visible
+            let dropped = DropSection27.nearest(to: dropPoint, in: ownFrames)
+            guard let section = DropSection27.section(
+                dropped: dropped,
+                picked: picked.frame,
+                runs: runs,
+                current: current,
+                hiddenRevealed: hiddenRevealed
+            ) else {
+                Self.dragLogger.debug("""
+                    Drop of \(picked.bundleID, privacy: .public) leaves it \(String(describing: current), privacy: .public) \
+                    (found: \(dropped != nil, privacy: .public), hidden revealed: \(hiddenRevealed, privacy: .public), \
+                    taken at \(String(describing: leftMouseDownLocation), privacy: .public))
+                    """)
+                return
+            }
+            Self.dragLogger.notice("""
+                Drop moves \(picked.bundleID, privacy: .public) from \(String(describing: current), privacy: .public) \
+                to \(String(describing: section), privacy: .public)
+                """)
+            concealer.setSection(section, for: picked.bundleID)
+        }
+    }
+
+    /// The bounds of the display holding the given point, in Core Graphics coordinates.
+    @available(macOS 27.0, *)
+    private static func displayBounds27(containing point: CGPoint) -> CGRect? {
+        NSScreen.screens
+            .map { CGDisplayBounds($0.displayID) }
+            .first { $0.contains(point) }
+    }
+
+    /// The drawn items that belong to an application with a section, with its bundle identifier.
+    ///
+    /// Ice's own control items and MenuBarAgent's system items are left out, as are items of
+    /// concealed applications, whose frames Accessibility keeps where they were last drawn.
+    @available(macOS 27.0, *)
+    private static func applicationItems27(
+        _ items: [MenuBarItem],
+        concealedPIDs: Set<pid_t>,
+        displayBounds: CGRect?
+    ) -> [(bundleID: String, frame: CGRect)] {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        return items.compactMap { item in
+            guard
+                item.isOnScreen,
+                item.ownerPID != ownPID,
+                !item.isControlItem,
+                !concealedPIDs.contains(item.ownerPID),
+                item.bounds.width > 4,
+                displayBounds?.intersects(item.bounds) ?? true,
+                let bundleID = item.sourceApplication?.bundleIdentifier,
+                bundleID != MenuBarItemProvider27.menuBarAgentBundleID
+            else {
+                return nil
+            }
+            return (bundleID, item.bounds)
+        }
+    }
+
+    /// The item under the given point, judged along the bar alone: the pointer is in the menu bar
+    /// whenever a drag there begins, and Accessibility frames can sit a point off its height.
+    @available(macOS 27.0, *)
+    private static func applicationItem27(
+        at point: CGPoint,
+        in items: [(bundleID: String, frame: CGRect)]
+    ) -> (bundleID: String, frame: CGRect)? {
+        items.first { $0.frame.minX <= point.x && point.x <= $0.frame.maxX }
     }
 
     // MARK: Handle System Item Clicks (macOS 27)
