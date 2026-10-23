@@ -24,6 +24,64 @@ enum ItemImages27 {
         )
     }
 
+    /// The index of the frame that is a display's menu bar window, or `nil` when none is, or
+    /// more than one is and there is no telling which.
+    ///
+    /// MenuBarAgent keeps a bar window per display, the full width of the display along its
+    /// top edge. Frames are in global points with the origin at the top left.
+    static func barWindowIndex(frames: [CGRect], display: CGRect, tolerance: CGFloat = 1) -> Int? {
+        let matches = frames.indices.filter { index in
+            let frame = frames[index]
+            return abs(frame.minX - display.minX) <= tolerance
+                && abs(frame.minY - display.minY) <= tolerance
+                && abs(frame.width - display.width) <= tolerance
+                && frame.height > 0
+                && frame.height <= maximumBarHeight
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    /// Taller than any menu bar, notched or not.
+    private static let maximumBarHeight: CGFloat = 60
+
+    /// At or below this opacity, a pixel of a capture on transparency is taken for clear.
+    static let clearAlpha: UInt8 = 8
+
+    /// The same premultiplied pixels with every pixel at or below ``clearAlpha`` made clear.
+    static func clearingFaintAlpha(pixels: [UInt8]) -> [UInt8] {
+        var result = pixels
+        for index in stride(from: 3, to: pixels.count, by: 4) where pixels[index] <= clearAlpha {
+            result[index - 3] = 0
+            result[index - 2] = 0
+            result[index - 1] = 0
+            result[index] = 0
+        }
+        return result
+    }
+
+    /// Whether nothing in the pixels is drawn above ``clearAlpha``.
+    static func isClear(pixels: [UInt8]) -> Bool {
+        !stride(from: 3, to: pixels.count, by: 4).contains { pixels[$0] > clearAlpha }
+    }
+
+    /// Whether nearly all visible premultiplied pixels are shades of grey, as a template glyph's
+    /// are, rather than an icon drawn in colour.
+    static func isMonochrome(pixels: [UInt8]) -> Bool {
+        var visible = 0
+        var coloured = 0
+        for index in stride(from: 0, to: pixels.count - 3, by: 4) where pixels[index + 3] > visibleAlpha {
+            visible += 1
+            let channels = (0..<3).map { Int(pixels[index + $0]) * 255 / Int(pixels[index + 3]) }
+            if channels.max()! - channels.min()! > greyTolerance {
+                coloured += 1
+            }
+        }
+        return coloured * 20 <= visible
+    }
+
+    /// How far apart a grey pixel's channels may be.
+    private static let greyTolerance = 32
+
     /// Below this share of the glyph's own contrast, a pixel is taken for bar, not glyph.
     private static let noiseFloor = 0.06
     /// A tile whose pixels all sit this close to the background holds no glyph.

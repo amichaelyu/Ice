@@ -674,6 +674,46 @@ struct ItemImageTrimming27Tests {
     }
 }
 
+@Suite("Bar window captures")
+struct BarWindowCapture27Tests {
+    let display = CGRect(x: 0, y: 0, width: 1800, height: 1169)
+
+    @Test("The window along the display's top edge is the bar")
+    func found() {
+        let frames = [CGRect(x: 600, y: 0, width: 200, height: 38), CGRect(x: 0, y: 0, width: 1800, height: 39)]
+        #expect(ItemImages27.barWindowIndex(frames: frames, display: display) == 1)
+    }
+
+    @Test("Another display's bar is not taken for this one's")
+    func otherDisplay() {
+        let frames = [CGRect(x: 1800, y: -200, width: 2560, height: 30), CGRect(x: 0, y: 0, width: 1800, height: 39)]
+        #expect(ItemImages27.barWindowIndex(frames: frames, display: display) == 1)
+        #expect(ItemImages27.barWindowIndex(frames: [frames[0]], display: display) == nil)
+    }
+
+    @Test("Two windows that both fit leave no telling which is the bar")
+    func ambiguous() {
+        let bar = CGRect(x: 0, y: 0, width: 1800, height: 39)
+        #expect(ItemImages27.barWindowIndex(frames: [bar, bar], display: display) == nil)
+    }
+
+    @Test("Faint pixels are cleared and the rest kept")
+    func faintCleared() {
+        let pixels: [UInt8] = [8, 8, 8, 8, 9, 9, 9, 9, 255, 255, 255, 255]
+        #expect(ItemImages27.clearingFaintAlpha(pixels: pixels) == [0, 0, 0, 0, 9, 9, 9, 9, 255, 255, 255, 255])
+        #expect(ItemImages27.isClear(pixels: [3, 3, 3, 8]))
+        #expect(!ItemImages27.isClear(pixels: [3, 3, 3, 8, 9, 9, 9, 9]))
+    }
+
+    @Test("A template glyph is monochrome and a colour icon is not")
+    func monochrome() {
+        let white = [UInt8](repeating: 255, count: 40)
+        #expect(ItemImages27.isMonochrome(pixels: white + [128, 128, 128, 128]))
+        let red = Array([[UInt8]](repeating: [200, 30, 30, 255], count: 10).joined())
+        #expect(!ItemImages27.isMonochrome(pixels: white + red))
+    }
+}
+
 @Suite("SectionLayoutEditing27")
 struct SectionLayoutEditing27Tests {
     let saved: [String: MacOS27Section] = ["ru.keepcoder.Telegram": .hidden, "com.caldis.Mos": .alwaysHidden]

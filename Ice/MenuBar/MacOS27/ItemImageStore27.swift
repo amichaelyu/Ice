@@ -9,14 +9,13 @@ import ScreenCaptureKit
 
 /// Images of menu bar items on macOS 27, captured from the active menu bar.
 ///
-/// MenuBarAgent draws every item into one menu bar, so Ice's per-item window captures
-/// are gone. Only a capture of the display holds the glyphs (measured on macOS 27.0: a
-/// capture of MenuBarAgent's bar window holds just the application menu), and it
-/// includes the bar's background. That background is cut away, leaving the glyph on
-/// transparency, so the Ice Bar and the layout window draw every item on their own
-/// colour whatever is behind the menu bar. Items on an inactive bar are drawn dimmer, so
-/// only the active bar is captured. Images are kept on disk, so an item that is concealed
-/// still has one.
+/// MenuBarAgent draws every item into one bar window per display, so Ice's per-item window
+/// captures are gone. Captured alone on transparency, that window holds the application
+/// menu and every drawn item on a clear background (measured on macOS 27.0.1), so each
+/// item is cropped out as it is. When the window cannot be found or captured, the display's
+/// menu bar strip is captured instead and the bar behind each glyph is cut away. Items on an
+/// inactive bar are drawn dimmer, so only the active bar is captured. Images are kept on
+/// disk, so an item that is concealed still has one.
 @available(macOS 27.0, *)
 @MainActor
 final class ItemImageStore27 {
@@ -25,16 +24,12 @@ final class ItemImageStore27 {
     private struct IndexEntry: Codable {
         let fileName: String
         let scale: CGFloat
+        /// Whether the tile was cut from a capture of the display, so it may still hold the bar.
+        let cutFromBar: Bool
     }
 
-    /// Bumped when stored images change shape. Version 1 kept the menu bar behind the
-    /// glyph; version 2 cut it away but left the glyph in the colour it was captured in;
-    /// version 3 kept the bar's own uneven padding around it; versions 4 and 5 left a haze
-    /// of the bar over the tile, which showed as a pale box behind the glyph; version 6
-    /// spaced the glyphs more tightly than the menu bar does; version 7 could not give a
-    /// glyph its full margin when the capture ended right at the glyph's edge; version 8
-    /// could store a tile cut while the bar was re-laying out.
-    private static let storeVersion = "9"
+    /// Bumped when stored images change shape, so older tiles are captured again.
+    private static let storeVersion = "10"
 
     /// The margin left on each side of a glyph, in points, so items are spaced evenly and
     /// with the menu bar's own rhythm: its glyphs sit 18 to 29 points apart, median 22
@@ -61,18 +56,35 @@ final class ItemImageStore27 {
     private static let captureFreshness = Duration.milliseconds(700)
 
     private var appearanceObserver: NSObjectProtocol?
+    private var screenObserver: NSObjectProtocol?
+
+    /// MenuBarAgent's bar window on the display last captured, kept so it is not looked up
+    /// again for every capture.
+    private var barWindow: (displayID: CGDirectDisplayID, window: SCWindow)?
+
+    /// Whether the last capture came from the bar window, so a change of path is logged once.
+    private var capturedBarWindow: Bool?
 
     init() {
         let versionFile = directory.appendingPathComponent("version.txt")
-        guard (try? String(contentsOf: versionFile, encoding: .utf8)) == Self.storeVersion else {
+        if (try? String(contentsOf: versionFile, encoding: .utf8)) == Self.storeVersion {
+            if
+                let data = try? Data(contentsOf: directory.appendingPathComponent("index.json")),
+                let stored = try? JSONDecoder().decode([String: IndexEntry].self, from: data)
+            {
+                index = stored
+            }
+        } else {
             try? FileManager.default.removeItem(at: directory)
-            return
         }
-        if
-            let data = try? Data(contentsOf: directory.appendingPathComponent("index.json")),
-            let stored = try? JSONDecoder().decode([String: IndexEntry].self, from: data)
-        {
-            index = stored
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.barWindow = nil
+            }
         }
         // Glyphs are stored in the colour that suits the current appearance, so a switch
         // between light and dark needs them captured again.
@@ -111,7 +123,7 @@ final class ItemImageStore27 {
         else {
             return nil
         }
-        guard isUsable(cgImage, key: key) else {
+        guard !entry.cutFromBar || isUsable(cgImage, key: key) else {
             // Stored before this check existed, or stored against a wallpaper that defeated it.
             // Forgetting it is what lets `photographMissing` take the item again.
             index[key] = nil
@@ -253,14 +265,43 @@ final class ItemImageStore27 {
         let stripFrame = CGRect(x: displayBounds.minX, y: displayBounds.minY, width: displayBounds.width, height: barHeight)
         let items = await MenuBarItemProvider27.items()
         let concealedPIDs = appState.concealer27.concealedPIDs
-        guard let captured = await captureStrip(displayID: displayID, size: stripFrame.size) else {
-            return
-        }
-        let (strip, scale) = captured
         // Only items that sat still through the capture are stored. See `settledTags`.
         func frames(_ items: [MenuBarItem]) -> [String: CGRect] {
             Dictionary(items.map { ($0.tag.description, $0.bounds) }, uniquingKeysWith: { first, _ in first })
         }
+        let fromBarWindow = await captureBarWindow(displayID: displayID, displayBounds: displayBounds)
+        if capturedBarWindow != (fromBarWindow != nil) {
+            capturedBarWindow = fromBarWindow != nil
+            logger.notice("Capturing menu bar items from \(fromBarWindow != nil ? "MenuBarAgent's bar window" : "the display", privacy: .public)")
+        }
+        if let fromBarWindow {
+            let (barImage, windowFrame, scale) = fromBarWindow
+            let settled = ItemImages27.settledTags(before: frames(items), after: frames(await MenuBarItemProvider27.items()))
+            var skipped = 0
+            var stored = 0
+            for item in items where item.isOnScreen && !item.isControlItem && !concealedPIDs.contains(item.ownerPID) {
+                guard settled.contains(item.tag.description) else {
+                    skipped += 1
+                    continue
+                }
+                guard
+                    let rect = ItemImages27.cropRect(itemFrame: item.bounds, stripFrame: windowFrame, scale: scale),
+                    let image = barImage.cropping(to: rect),
+                    let glyph = glyphOnTransparency(image, scale: scale)
+                else {
+                    continue
+                }
+                store(glyph, scale: scale, key: item.tag.description, cutFromBar: false)
+                stored += 1
+            }
+            writeIndex()
+            logger.debug("Stored \(stored, privacy: .public) item images from MenuBarAgent's bar window, skipped \(skipped, privacy: .public) that moved")
+            return
+        }
+        guard let captured = await captureStrip(displayID: displayID, size: stripFrame.size) else {
+            return
+        }
+        let (strip, scale) = captured
         let settled = ItemImages27.settledTags(before: frames(items), after: frames(await MenuBarItemProvider27.items()))
         var skipped = 0
         var stored = 0
@@ -294,7 +335,7 @@ final class ItemImageStore27 {
             else {
                 continue
             }
-            store(glyph, scale: scale, key: item.tag.description)
+            store(glyph, scale: scale, key: item.tag.description, cutFromBar: true)
             stored += 1
         }
         writeIndex()
@@ -349,6 +390,59 @@ final class ItemImageStore27 {
     }
 
     // MARK: Private
+
+    /// MenuBarAgent's bar window, which ScreenCaptureKit lists as off screen.
+    private static let menuBarAgentID = "com.apple.MenuBarAgent"
+    private static let barWindowLayer = 24
+
+    /// Captures MenuBarAgent's bar window on the display alone, on transparency, with its frame
+    /// in global points and the capture's scale; `nil` when the window cannot be told apart or
+    /// the capture fails or comes back empty.
+    private func captureBarWindow(
+        displayID: CGDirectDisplayID,
+        displayBounds: CGRect
+    ) async -> (image: CGImage, frame: CGRect, scale: CGFloat)? {
+        if barWindow?.displayID != displayID {
+            barWindow = nil
+        }
+        do {
+            let window: SCWindow
+            if let cached = barWindow?.window {
+                window = cached
+            } else {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                let candidates = content.windows.filter {
+                    $0.owningApplication?.bundleIdentifier == Self.menuBarAgentID && $0.windowLayer == Self.barWindowLayer
+                }
+                guard let index = ItemImages27.barWindowIndex(frames: candidates.map(\.frame), display: displayBounds) else {
+                    return nil
+                }
+                window = candidates[index]
+                barWindow = (displayID, window)
+            }
+            let filter = SCContentFilter(desktopIndependentWindow: window)
+            let configuration = SCStreamConfiguration()
+            configuration.width = Int(window.frame.width * CGFloat(filter.pointPixelScale))
+            configuration.height = Int(window.frame.height * CGFloat(filter.pointPixelScale))
+            configuration.shouldBeOpaque = false
+            configuration.ignoreShadowsSingleWindow = true
+            configuration.showsCursor = false
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+            guard
+                window.frame.width > 0,
+                let pixels = Self.pixels(of: image),
+                !ItemImages27.isClear(pixels: pixels)
+            else {
+                barWindow = nil
+                return nil
+            }
+            return (image, window.frame, CGFloat(image.width) / window.frame.width)
+        } catch {
+            barWindow = nil
+            logger.error("Could not capture MenuBarAgent's bar window: \(error, privacy: .public)")
+            return nil
+        }
+    }
 
     private func captureStrip(displayID: CGDirectDisplayID, size: CGSize) async -> (CGImage, CGFloat)? {
         do {
@@ -454,20 +548,70 @@ final class ItemImageStore27 {
         keyed.withUnsafeMutableBytes { buffer in
             bytes.update(from: buffer.bindMemory(to: UInt8.self).baseAddress!, count: count)
         }
-        guard
-            let keyedImage = context.makeImage(),
-            let columns = ItemImages27.glyphColumns(pixels: keyed, width: width, height: height)
-        else {
-            // Nothing was drawn in the item's rectangle; there is no image to keep.
+        guard let keyedImage = context.makeImage() else {
             return nil
         }
-        // The glyph is drawn into a fresh tile rather than cropped with margins, because a
-        // capture often ends right at the glyph's edge and then cropping has no room left.
-        let margin = Int((Self.glyphMargin * scale).rounded())
+        return Self.padded(keyedImage, pixels: keyed, scale: scale)
+    }
+
+    /// An item cropped from MenuBarAgent's bar window, which is already a glyph on transparency,
+    /// recoloured for the panel if it is a template glyph and given an even margin.
+    private func glyphOnTransparency(_ image: CGImage, scale: CGFloat) -> CGImage? {
+        guard let raw = Self.pixels(of: image) else {
+            return nil
+        }
+        if ItemImages27.isFaded(pixels: raw, width: image.width, height: image.height) {
+            logger.debug("Refusing a tile of an item caught mid-fade")
+            return nil
+        }
+        var pixels = ItemImages27.clearingFaintAlpha(pixels: raw)
+        // Colour icons come through intact and keep their colours.
+        if ItemImages27.isMonochrome(pixels: pixels) {
+            let tinted = ItemImages27.tinted(pixels: pixels, colour: Self.glyphColor())
+            for index in stride(from: 0, to: pixels.count, by: 4) {
+                let opacity = Double(tinted[index + 3]) / 255
+                for channel in 0..<3 {
+                    pixels[index + channel] = UInt8((Double(tinted[index + channel]) * opacity).rounded())
+                }
+            }
+        }
+        guard let cleared = Self.image(fromPixels: pixels, width: image.width, height: image.height) else {
+            return nil
+        }
+        return Self.padded(cleared, pixels: pixels, scale: scale)
+    }
+
+    /// Premultiplied pixels as an image.
+    private static func image(fromPixels pixels: [UInt8], width: Int, height: Int) -> CGImage? {
+        var pixels = pixels
+        return pixels.withUnsafeMutableBytes { buffer in
+            CGContext(
+                data: buffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )?.makeImage()
+        }
+    }
+
+    /// The glyph in the image, given as its pixels too, drawn into a fresh tile with an even margin
+    /// on either side; `nil` when nothing is drawn.
+    ///
+    /// A fresh tile rather than a crop with margins, because a capture often ends right at the
+    /// glyph's edge and then cropping has no room left.
+    private static func padded(_ image: CGImage, pixels: [UInt8], scale: CGFloat) -> CGImage? {
+        let height = image.height
+        guard let columns = ItemImages27.glyphColumns(pixels: pixels, width: image.width, height: height) else {
+            return nil
+        }
+        let margin = Int((glyphMargin * scale).rounded())
         let glyphWidth = columns.upperBound - columns.lowerBound + 1
         let paddedWidth = glyphWidth + margin * 2
         guard
-            let glyph = keyedImage.cropping(to: CGRect(x: columns.lowerBound, y: 0, width: glyphWidth, height: height)),
+            let glyph = image.cropping(to: CGRect(x: columns.lowerBound, y: 0, width: glyphWidth, height: height)),
             let padded = CGContext(
                 data: nil,
                 width: paddedWidth,
@@ -475,13 +619,13 @@ final class ItemImageStore27 {
                 bitsPerComponent: 8,
                 bytesPerRow: paddedWidth * 4,
                 space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: bitmapInfo
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
             )
         else {
-            return keyedImage
+            return image
         }
         padded.draw(glyph, in: CGRect(x: margin, y: 0, width: glyphWidth, height: height))
-        return padded.makeImage() ?? keyedImage
+        return padded.makeImage() ?? image
     }
 
     /// Whether a finished tile is a glyph on transparency rather than a piece of the bar.
@@ -502,13 +646,13 @@ final class ItemImageStore27 {
         return false
     }
 
-    private func store(_ image: CGImage, scale: CGFloat, key: String) {
-        guard isUsable(image, key: key) else {
+    private func store(_ image: CGImage, scale: CGFloat, key: String, cutFromBar: Bool) {
+        guard !cutFromBar || isUsable(image, key: key) else {
             return
         }
         let fileName = ItemImages27.fileName(forTag: key)
         loaded[key] = CapturedImage(cgImage: image, scale: scale)
-        index[key] = IndexEntry(fileName: fileName, scale: scale)
+        index[key] = IndexEntry(fileName: fileName, scale: scale, cutFromBar: cutFromBar)
         guard let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
             return
         }
