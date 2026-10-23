@@ -128,6 +128,76 @@ final class ItemImageStore27 {
         return image
     }
 
+    /// The owning application's icon, drawn at the size of a menu bar item, for an item that has
+    /// no photograph.
+    ///
+    /// An item macOS folds away behind its « is drawn nowhere and cannot be photographed, and on
+    /// a crowded notched bar that can be every item of a section. With no image for any of them,
+    /// the layout window showed "Unable to display menu bar items" in the section's place, and
+    /// the items could not be dragged out of it. The icon is marked as a stand-in and never
+    /// stored, so ``photographMissing(items:appState:)`` still goes after the item, and the
+    /// first photograph replaces it.
+    func standInImage(for item: MenuBarItem) -> CapturedImage? {
+        guard let application = item.sourceApplication, let bundleID = application.bundleIdentifier else {
+            return nil
+        }
+        if let image = standIns[bundleID] {
+            return image
+        }
+        guard let icon = application.icon ?? application.bundleURL.map({ NSWorkspace.shared.icon(forFile: $0.path) }) else {
+            return nil
+        }
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let size = CGSize(width: Self.standInIconSize + Self.glyphMargin * 2, height: Self.standInTileHeight)
+        guard
+            let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: Int((size.width * scale).rounded()),
+                pixelsHigh: Int((size.height * scale).rounded()),
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            ),
+            let context = NSGraphicsContext(bitmapImageRep: bitmap)
+        else {
+            return nil
+        }
+        bitmap.size = size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        icon.draw(
+            in: CGRect(
+                x: Self.glyphMargin,
+                y: (size.height - Self.standInIconSize) / 2,
+                width: Self.standInIconSize,
+                height: Self.standInIconSize
+            ),
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1
+        )
+        NSGraphicsContext.restoreGraphicsState()
+        guard let cgImage = bitmap.cgImage else {
+            return nil
+        }
+        let image = CapturedImage(cgImage: cgImage, scale: scale, isStandIn: true)
+        standIns[bundleID] = image
+        return image
+    }
+
+    /// The side of a stand-in icon, about the height of a menu bar glyph.
+    private static let standInIconSize: CGFloat = 16
+
+    /// The height of a photographed tile, which is the item's own (measured on macOS 27.0: 24 points).
+    private static let standInTileHeight: CGFloat = 24
+
+    /// Stand-in icons already drawn, by bundle identifier.
+    private var standIns = [String: CapturedImage]()
+
     /// Captures the active menu bar and stores the images of the items drawn on it.
     /// Captures follow one another rather than overlapping: a single reveal set four of them
     /// going at once, 260–290 ms each (measured 2026-09-16), all asking the display server

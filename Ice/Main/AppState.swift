@@ -94,6 +94,34 @@ final class AppState: ObservableObject {
         return panel
     }
 
+    /// Storage for ``focusWatcher27``, typed loosely so the property exists on every macOS.
+    private var focusWatcher27Storage: AnyObject?
+
+    /// Watches which Focus is on, on macOS 27.
+    @available(macOS 27.0, *)
+    var focusWatcher27: FocusWatcher27 {
+        if let watcher = focusWatcher27Storage as? FocusWatcher27 {
+            return watcher
+        }
+        let watcher = FocusWatcher27()
+        focusWatcher27Storage = watcher
+        return watcher
+    }
+
+    /// Storage for ``focusIndicatorPanel27``, typed loosely so the property exists on every macOS.
+    private var focusIndicatorPanel27Storage: AnyObject?
+
+    /// Draws Ice's own Focus indicator on macOS 27.
+    @available(macOS 27.0, *)
+    var focusIndicatorPanel27: FocusIndicatorPanel27 {
+        if let panel = focusIndicatorPanel27Storage as? FocusIndicatorPanel27 {
+            return panel
+        }
+        let panel = FocusIndicatorPanel27(appState: self)
+        focusIndicatorPanel27Storage = panel
+        return panel
+    }
+
     /// Storage for ``itemImageStore27``, typed loosely so the property exists on every macOS.
     private var itemImageStore27Storage: AnyObject?
 

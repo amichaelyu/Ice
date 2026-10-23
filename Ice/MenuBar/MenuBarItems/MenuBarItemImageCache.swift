@@ -17,6 +17,10 @@ final class MenuBarItemImageCache: ObservableObject {
         /// The scale factor of the image at the time of capture.
         let scale: CGFloat
 
+        /// Whether this is the application's icon standing in for an item that has not been
+        /// photographed, rather than the item itself. See `ItemImageStore27.standInImage(for:)`.
+        var isStandIn = false
+
         /// The image's size, applying ``scale``.
         var scaledSize: CGSize {
             CGSize(
@@ -315,13 +319,21 @@ final class MenuBarItemImageCache: ObservableObject {
             await store.captureActiveMenuBar(appState: appState)
             await store.photographMissing(items: items, appState: appState)
             var newImages = [MenuBarItemTag: CapturedImage]()
+            var standIns = [MenuBarItemTag: CapturedImage]()
             for item in items {
                 if let image = await store.image(for: item) {
                     newImages[item.tag] = image
+                } else if !item.isControlItem, let standIn = await store.standInImage(for: item) {
+                    standIns[item.tag] = standIn
                 }
             }
-            await MainActor.run { [newImages] in
-                images.merge(newImages) { (_, new) in new }
+            await MainActor.run { [newImages, standIns] in
+                var merged = images.merging(newImages) { (_, new) in new }
+                // A stand-in never takes the place of a photograph taken earlier.
+                for (tag, standIn) in standIns where merged[tag]?.isStandIn ?? true {
+                    merged[tag] = standIn
+                }
+                images = merged
             }
             return
         }

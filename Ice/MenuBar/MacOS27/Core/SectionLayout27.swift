@@ -80,6 +80,43 @@ enum SectionLayout27 {
         return appSections(items: sections)
     }
 
+    /// The sections the applications held before macOS 27, from the positions AppKit saved.
+    ///
+    /// AppKit keeps every status item's place in its owner's preferences, as
+    /// `NSStatusItem Preferred Position <autosave name>`: points from the right edge of the bar,
+    /// larger further left. Ice's dividers are kept the same way, in Ice's own preferences (704
+    /// and 732 on the Mac this was written on). Before macOS 27 an item left of the hidden
+    /// divider was hidden, and left of the always-hidden one always hidden, so the positions say
+    /// what the bar said — and they survive the upgrade, where the bar's order does not: macOS 27
+    /// rearranges the bar itself, and the order read there put every application in Visible.
+    ///
+    /// An application with several items takes the most hidden section any of them would have:
+    /// the item the user dragged behind a divider is the one that says what they wanted, while an
+    /// item left where it first appeared says nothing. An application with no saved position is
+    /// left out, so it stays visible like any application the layout has not seen.
+    ///
+    /// - Parameters:
+    ///   - preferredPositions: The saved positions of each application's items, by bundle identifier.
+    ///   - hiddenDivider: The saved position of the divider for the hidden section.
+    ///   - alwaysHiddenDivider: The saved position of the divider for the always-hidden section,
+    ///     if that section is enabled. One that is not left of the hidden divider is ignored.
+    static func seededLayout(
+        preferredPositions: [String: [CGFloat]],
+        hiddenDivider: CGFloat,
+        alwaysHiddenDivider: CGFloat?
+    ) -> [String: MacOS27Section] {
+        let alwaysHiddenDivider = alwaysHiddenDivider.flatMap { $0 > hiddenDivider ? $0 : nil }
+        return preferredPositions.reduce(into: [:]) { result, entry in
+            let sections = entry.value.map { position -> MacOS27Section in
+                if let alwaysHiddenDivider, position > alwaysHiddenDivider {
+                    return .alwaysHidden
+                }
+                return position > hiddenDivider ? .hidden : .visible
+            }
+            result[entry.key] = sections.max()
+        }
+    }
+
     /// The section an item's bounds put it in, or `nil` for one lying across a divider.
     ///
     /// The rules are the ones Ice used on the bar before macOS 27.

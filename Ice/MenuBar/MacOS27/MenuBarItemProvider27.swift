@@ -54,6 +54,12 @@ enum MenuBarItemProvider27 {
     nonisolated(unsafe) private static var lastBarFramesByDisplay = [CGDirectDisplayID: [CGRect]]()
     /// How many of each bar's entries belong to applications rather than the system group.
     nonisolated(unsafe) private static var lastApplicationEntriesByDisplay = [CGDirectDisplayID: Int]()
+    /// The overflow button each bar lists, per display, with an empty frame where the bar lists
+    /// it without geometry. The one under `AXExtrasMenuBar` belongs to the active bar alone, so a
+    /// "«" on the other display, or one missed because the active bar moved mid-read, was nowhere
+    /// to be found, and a notched bar overflowing as macOS means it to read as stuck (seen on
+    /// macOS 27.0.1 with the built-in display as the main one).
+    nonisolated(unsafe) private static var lastOverflowButtonsByDisplay = [CGDirectDisplayID: CGRect]()
     /// How far left of the clock's own left edge the other system items reach (measured on
     /// macOS 27.0: 122 points on both displays — battery, Wi-Fi and Control Centre).
     private static let systemItemsSpan: CGFloat = 130
@@ -185,6 +191,12 @@ enum MenuBarItemProvider27 {
         lock.withLock { lastOverflowButtonFrame }
     }
 
+    /// The overflow button the given display's bar lists, from the last read, or `nil` if it
+    /// lists none. The frame is empty when the bar lists the button without geometry.
+    static func overflowButtonFrame(for displayID: CGDirectDisplayID) -> CGRect? {
+        lock.withLock { lastOverflowButtonsByDisplay[displayID] }
+    }
+
     /// The Accessibility element of the item with the given synthetic identifier, from the
     /// last read. Items drawn on another display are included (see `ItemDrawing27`).
     static func element(forWindowID windowID: CGWindowID) -> AXUIElement? {
@@ -289,7 +301,8 @@ enum MenuBarItemProvider27 {
                 // window's own frame — an entry with no geometry would otherwise be filed under
                 // whichever display happens to contain the origin.
                 var framesByDisplay = [CGDirectDisplayID: [CGRect]]()
-                var entriesByDisplay = [CGDirectDisplayID: Int]()
+                var barsByDisplay = [CGDirectDisplayID: (entries: Int, systemItemsWithGeometry: Int)]()
+                var overflowButtonsByDisplay = [CGDirectDisplayID: CGRect]()
                 for window in elements(application, kAXWindowsAttribute) ?? [] {
                     guard let windowFrame = frame(of: window) else {
                         continue
@@ -302,21 +315,30 @@ enum MenuBarItemProvider27 {
                     }
                     // An entry the bar lists without geometry answers no position at all, so a
                     // missing frame is kept as an empty one: the entry is what counts.
-                    let childFrames = (elements(window, kAXChildrenAttribute) ?? []).map { child in
+                    let windowChildren = elements(window, kAXChildrenAttribute) ?? []
+                    let childFrames = windowChildren.map { child in
                         frame(of: elements(child, kAXChildrenAttribute)?.first ?? child) ?? .zero
+                    }
+                    // The overflow button is a button among the bar's entries, as it is under
+                    // `AXExtrasMenuBar`. It stays counted with them: the counts were measured
+                    // with it in (see `Concealer27.checkStuckOverflow`).
+                    if let button = windowChildren.first(where: { string($0, kAXRoleAttribute) == kAXButtonRole }) {
+                        overflowButtonsByDisplay[display] = frame(of: button) ?? .zero
                     }
                     // Added to, not replaced: one window per display is what macOS 27.0 has, but
                     // a second one would otherwise take the first one's entries away with it.
                     framesByDisplay[display, default: []].append(contentsOf: childFrames)
-                    guard let clock = childFrames.max(by: { $0.width < $1.width }), clock.width > 80 else {
-                        continue
+                    // Every entry is counted, and the system items only where they have geometry:
+                    // the bar that is not active lists some of them without (see
+                    // `StuckOverflow27.applicationEntryCounts(bars:)`).
+                    var systemFrames = [CGRect]()
+                    if let clock = childFrames.max(by: { $0.width < $1.width }), clock.width > 80 {
+                        systemFrames = childFrames.filter { $0.width > 1 && $0.minX >= clock.minX - systemItemsSpan }
                     }
-                    let systemFrames = childFrames.filter { $0.width > 1 && $0.minX >= clock.minX - systemItemsSpan }
-                    entriesByDisplay[display, default: 0] += StuckOverflow27.applicationEntryCount(
-                        childFrames: childFrames,
-                        systemItemFrames: systemFrames
-                    )
+                    barsByDisplay[display, default: (0, 0)].entries += childFrames.count
+                    barsByDisplay[display, default: (0, 0)].systemItemsWithGeometry += systemFrames.count
                 }
+                let entriesByDisplay = StuckOverflow27.applicationEntryCounts(bars: barsByDisplay)
                 let perDisplay = framesByDisplay.compactMapValues { frames -> [CGRect]? in
                     guard let clock = frames.max(by: { $0.width < $1.width }), clock.width > 80 else {
                         return nil
@@ -327,6 +349,7 @@ enum MenuBarItemProvider27 {
                     lastSystemFramesByDisplay = perDisplay
                     lastBarFramesByDisplay = framesByDisplay
                     lastApplicationEntriesByDisplay = entriesByDisplay
+                    lastOverflowButtonsByDisplay = overflowButtonsByDisplay
                 }
                 let systemFrames = rawItems
                     .filter { $0.bundleID == menuBarAgentBundleID && (activeDisplayBounds?.intersects($0.frame) ?? true) }

@@ -67,45 +67,40 @@ struct StuckOverflow27Tests {
 
 @Suite("Stuck overflow on a bar that is not active")
 struct StuckOverflowByCount27Tests {
-    // The built-in bar as measured on 2026-10-02, with three Stats modules folded away:
-    // one application item and the four system ones.
-    let systemFrames = [
-        CGRect(x: -238, y: 98, width: 26, height: 33),
-        CGRect(x: -196, y: 98, width: 22, height: 33),
-        CGRect(x: -158, y: 98, width: 26, height: 33),
-        CGRect(x: -116, y: 98, width: 96, height: 33),
-    ]
-
-    func item(_ x: CGFloat, _ width: CGFloat) -> CGRect {
-        CGRect(x: x, y: 102, width: width, height: 24)
-    }
-
-    @Test("Only the entries left of the system group are counted")
+    @Test("The system group is taken off every bar's entries")
     func countsApplicationItems() {
-        let count = StuckOverflow27.applicationEntryCount(
-            childFrames: [item(-469, 33), item(-422, 33), item(-375, 33), item(-336, 46), item(-284, 31)] + systemFrames,
-            systemItemFrames: systemFrames
-        )
-        #expect(count == 5)
+        // The active bar as measured on 2026-10-02: five application items and the four system ones.
+        let counts = StuckOverflow27.applicationEntryCounts(bars: [1: (entries: 9, systemItemsWithGeometry: 4)])
+        #expect(counts == [1: 5])
     }
 
-    @Test("Items listed without geometry are counted too")
-    func countsPlaceholders() {
-        // The bar of the display that is not the active one lists its items this way.
-        let count = StuckOverflow27.applicationEntryCount(
-            childFrames: [.zero, .zero, .zero, .zero, .zero] + systemFrames,
-            systemItemFrames: systemFrames
-        )
-        #expect(count == 5)
+    @Test("System items listed without geometry are not taken for application items")
+    func systemItemsWithoutGeometry() {
+        // Measured on macOS 27.0.1, 2026-10-22: both bars list the same ten entries. The active,
+        // notched bar has geometry for its six system items; the external bar for four of them,
+        // with six entries at 0,0 — Wi-Fi and battery among them.
+        let counts = StuckOverflow27.applicationEntryCounts(bars: [
+            1: (entries: 10, systemItemsWithGeometry: 6),
+            2: (entries: 10, systemItemsWithGeometry: 4),
+        ])
+        #expect(counts == [1: 4, 2: 4])
+        #expect(!StuckOverflow27.isStuck(drawnApplicationItems: counts[1]!, expectedApplicationItems: counts[2]!))
     }
 
     @Test("A bar missing items counts fewer of them")
     func countsWhatIsLeft() {
-        let count = StuckOverflow27.applicationEntryCount(
-            childFrames: [item(-284, 31)] + systemFrames,
-            systemItemFrames: systemFrames
-        )
-        #expect(count == 1)
+        // The built-in bar on 2026-10-02 with four of five items folded away.
+        let counts = StuckOverflow27.applicationEntryCounts(bars: [
+            1: (entries: 5, systemItemsWithGeometry: 4),
+            2: (entries: 9, systemItemsWithGeometry: 0),
+        ])
+        #expect(counts == [1: 1, 2: 5])
+    }
+
+    @Test("With no system group to measure by, nothing is counted")
+    func noSystemGroup() {
+        let counts = StuckOverflow27.applicationEntryCounts(bars: [1: (entries: 9, systemItemsWithGeometry: 0)])
+        #expect(counts.isEmpty)
     }
 
     @Test("A bar drawing fewer items than there are is stuck")
@@ -122,5 +117,60 @@ struct StuckOverflowByCount27Tests {
     @Test("With nothing to draw there is nothing to miss")
     func nothingExpected() {
         #expect(!StuckOverflow27.isStuck(drawnApplicationItems: 0, expectedApplicationItems: 0))
+    }
+}
+
+@Suite("Stuck overflow on a notched bar")
+struct NotchedBarStuck27Tests {
+    @Test("A bar listing its own overflow button is never stuck")
+    func listsChevron() {
+        // As seen on macOS 27.0.1: the built-in bar overflowing with its « drawn, while the
+        // external display's bar lists more items.
+        #expect(!StuckOverflow27.isNotchedBarStuck(
+            listsOverflowButton: true,
+            listedApplicationItems: 6,
+            mostListedElsewhere: 19,
+            geometryLooksStuck: { true }
+        ))
+        #expect(!StuckOverflow27.isNotchedBarStuck(
+            listsOverflowButton: true,
+            listedApplicationItems: 6,
+            mostListedElsewhere: nil,
+            geometryLooksStuck: { true }
+        ))
+    }
+
+    @Test("Without the button, a bar listing fewer items than another is stuck")
+    func comparesCounts() {
+        #expect(StuckOverflow27.isNotchedBarStuck(
+            listsOverflowButton: false,
+            listedApplicationItems: 1,
+            mostListedElsewhere: 5,
+            geometryLooksStuck: { false }
+        ))
+        #expect(!StuckOverflow27.isNotchedBarStuck(
+            listsOverflowButton: false,
+            listedApplicationItems: 5,
+            mostListedElsewhere: 5,
+            geometryLooksStuck: { true }
+        ))
+    }
+
+    @Test("The only bar there is falls back on its geometry")
+    func singleDisplay() {
+        var asked = false
+        let stuck = StuckOverflow27.isNotchedBarStuck(
+            listsOverflowButton: false,
+            listedApplicationItems: 5,
+            mostListedElsewhere: nil,
+            geometryLooksStuck: { asked = true; return true }
+        )
+        #expect(stuck && asked)
+        #expect(!StuckOverflow27.isNotchedBarStuck(
+            listsOverflowButton: false,
+            listedApplicationItems: 5,
+            mostListedElsewhere: nil,
+            geometryLooksStuck: { false }
+        ))
     }
 }

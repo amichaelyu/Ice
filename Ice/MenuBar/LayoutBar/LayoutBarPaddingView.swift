@@ -77,7 +77,16 @@ final class LayoutBarPaddingView: NSView {
             // On macOS 27 the saved layout decides sections and macOS orders the items within
             // one, so a drop only moves the item's application to this section.
             if !draggingSource.item.isControlItem, let bundleID = draggingSource.item.sourceApplication?.bundleIdentifier {
-                appState.concealer27.setSection(MacOS27Section(container.section), for: bundleID)
+                let section = MacOS27Section(container.section)
+                // Not now: the drop arrives while SwiftUI is updating the layout window, and
+                // `setSection` publishes the concealer's state and, through the item cache it
+                // refreshes, the window's own. Done in place, every drop raised "Publishing
+                // changes from within view updates is not allowed". The cache `setSection`
+                // refreshes is read in a task of its own, so it still lands after the block above
+                // has let the container arrange its views again.
+                DispatchQueue.main.async {
+                    appState.concealer27.setSection(section, for: bundleID)
+                }
             }
             return true
         }

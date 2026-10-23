@@ -39,6 +39,7 @@ struct AdvancedSettingsPane: View {
             if #available(macOS 27.0, *) {
                 IceSection("Menu Bar Indicators") {
                     showCaptureIndicator
+                    showFocusIndicator
                 }
             }
             IceSection("Permissions") {
@@ -52,6 +53,25 @@ struct AdvancedSettingsPane: View {
         Toggle(isOn: $settings.showCaptureIndicator) {
             Text("Show a camera and microphone indicator")
             Text("macOS draws none of its own while Ice is hiding items. Click Ice's to open Control Centre.")
+        }
+    }
+
+    @ViewBuilder
+    private var showFocusIndicator: some View {
+        Toggle(isOn: $settings.showFocusIndicator) {
+            Text("Show a Focus indicator")
+            Text(
+                "Draws the active Focus while Ice is hiding items. Needs Full Disk Access, because "
+                    + "macOS keeps the Focus state in ~/Library/DoNotDisturb; Ice reads only which Focus is on. "
+                    + "Turning this on opens the Full Disk Access list; switch Ice on there."
+            )
+        }
+        .onChange(of: settings.showFocusIndicator) { _, isOn in
+            // macOS has no prompt for Full Disk Access, so opening the list is the asking. Whether
+            // it is granted shows under Permissions below.
+            if isOn, !FocusWatcher27.canReadFocusState() {
+                appState.permissions.fullDiskAccess.performRequest()
+            }
         }
     }
 
@@ -156,24 +176,45 @@ struct AdvancedSettingsPane: View {
 
     @ViewBuilder
     private var allPermissions: some View {
-        ForEach(appState.permissions.allPermissions) { permission in
-            LabeledContent {
-                if permission.hasPermission {
-                    Label {
-                        Text("Permission Granted")
-                    } icon: {
-                        Image(systemName: "checkmark.circle")
-                            .foregroundStyle(.green)
-                    }
-                } else {
-                    Button("Grant Permission") {
-                        permission.performRequest()
-                    }
-                }
-            } label: {
-                Text(permission.title)
+        Group {
+            ForEach(appState.permissions.settingsPermissions) { permission in
+                PermissionRow(permission: permission)
             }
-            .frame(height: 22)
         }
+        // Every check stops once Ice is set up, but Full Disk Access is meant to be granted from
+        // here, later, so its row follows the grant while the pane is open.
+        .onAppear {
+            appState.permissions.fullDiskAccess.startCheck()
+        }
+        .onDisappear {
+            appState.permissions.fullDiskAccess.stopCheck()
+        }
+    }
+}
+
+// MARK: - PermissionRow
+
+/// A permission and whether it is granted, observed so the row changes when the grant does.
+private struct PermissionRow: View {
+    @ObservedObject var permission: Permission
+
+    var body: some View {
+        LabeledContent {
+            if permission.hasPermission {
+                Label {
+                    Text("Permission Granted")
+                } icon: {
+                    Image(systemName: "checkmark.circle")
+                        .foregroundStyle(.green)
+                }
+            } else {
+                Button("Grant Permission") {
+                    permission.performRequest()
+                }
+            }
+        } label: {
+            Text(permission.title)
+        }
+        .frame(height: 22)
     }
 }

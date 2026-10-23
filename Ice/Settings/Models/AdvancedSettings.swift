@@ -42,6 +42,13 @@ final class AdvancedSettings: ObservableObject {
     /// spare it, so without this there is nothing on the bar to say the camera is on (macOS 27).
     @Published var showCaptureIndicator = true
 
+    /// Whether Ice draws its own Focus indicator while it is hiding items.
+    ///
+    /// The system's Focus item belongs to Control Centre and goes the same way as the camera
+    /// indicator while anything is concealed, with no allowlist to bring it back (macOS 27).
+    /// Off by default: the Focus state can only be read with Full Disk Access.
+    @Published var showFocusIndicator = false
+
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
@@ -63,6 +70,7 @@ final class AdvancedSettings: ObservableObject {
         Defaults.ifPresent(key: .enableSecondaryContextMenu, assign: &enableSecondaryContextMenu)
         Defaults.ifPresent(key: .showOnHoverDelay, assign: &showOnHoverDelay)
         Defaults.ifPresent(key: .showCaptureIndicator, assign: &showCaptureIndicator)
+        Defaults.ifPresent(key: .showFocusIndicator, assign: &showFocusIndicator)
         Defaults.ifPresent(key: .tempShowInterval, assign: &tempShowInterval)
 
         Defaults.ifPresent(key: .sectionDividerStyle) { rawValue in
@@ -122,6 +130,13 @@ final class AdvancedSettings: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { show in
                 Defaults.set(show, forKey: .showCaptureIndicator)
+            }
+            .store(in: &c)
+
+        $showFocusIndicator
+            .receive(on: DispatchQueue.main)
+            .sink { show in
+                Defaults.set(show, forKey: .showFocusIndicator)
             }
             .store(in: &c)
 
