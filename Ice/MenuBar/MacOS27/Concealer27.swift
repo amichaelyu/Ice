@@ -74,6 +74,9 @@ final class Concealer27: ObservableObject {
     private weak var appState: AppState?
     private var observers = [NSObjectProtocol]()
     private var applyTask: Task<Void, Never>?
+
+    /// The one read of the items after concealment changes (see ``scheduleRescan(after:)``).
+    private var rescanTask: Task<Void, Never>?
     private var suspendedUntil: ContinuousClock.Instant? {
         didSet {
             if isSuspended != (suspendedUntil != nil) {
@@ -356,6 +359,7 @@ final class Concealer27: ObservableObject {
                 if controller.isActive {
                     controller.releaseAll()
                 }
+                self?.clearOverflowNotice()
                 self?.requestNativeApply(concealed: concealed)
             case .assessment:
                 self?.cancelNativePacing()
@@ -369,12 +373,26 @@ final class Concealer27: ObservableObject {
             }
         }
         applyTask = task
-        // Concealing moves the remaining items, and hover hit-testing uses their cached
-        // frames. The refresh stays out of `applyTask`, so a slow read never holds up the
-        // next change. The bar animates for about 250 ms (measured).
-        Task { [weak self] in
-            await task.value
-            try? await Task.sleep(for: .milliseconds(400))
+        // The native switch moves the bar when the paced write lands, which reads the items then;
+        // a forced update may follow the bar being laid out again, so it reads them regardless.
+        if backend == .assessment || force {
+            scheduleRescan(after: task)
+        }
+    }
+
+    /// Reads the items again once the bar has settled after the last concealment change.
+    ///
+    /// Concealing moves the remaining items, and hover hit-testing uses their cached frames. A
+    /// burst of changes is read once, after the last. The read stays out of `applyTask`, so a
+    /// slow one never holds up the next change.
+    private func scheduleRescan(after task: Task<Void, Never>? = nil) {
+        rescanTask?.cancel()
+        rescanTask = Task { [weak self] in
+            await task?.value
+            try? await Task.sleep(for: Self.settleAfterChange)
+            guard !Task.isCancelled else {
+                return
+            }
             await self?.appState?.itemManager.cacheItemsIfNeeded()
             await self?.checkStuckOverflow()
         }
@@ -404,11 +422,6 @@ final class Concealer27: ObservableObject {
                     return
                 }
                 applyNative(concealed: due, at: now)
-                // The bar moves now rather than when the request came, so heavy work waits for
-                // this movement too, and the cached frames are read again once it has settled.
-                lastChangeAt = .now
-                try? await Task.sleep(for: Self.settleAfterChange)
-                await appState?.itemManager.cacheItemsIfNeeded()
             }
         }
     }
@@ -419,6 +432,12 @@ final class Concealer27: ObservableObject {
             let result = try native.apply(concealed: concealed)
             untrackedConcealed = result.untracked
             nativePacer.didApply(concealed, wrote: result.wrote, at: now)
+            if result.wrote {
+                // The bar moves now, which for a held write is later than the request, so heavy
+                // work waits for this movement too.
+                lastChangeAt = .now
+                scheduleRescan()
+            }
         } catch {
             logger.error("Could not apply concealment through the native switch: \(error, privacy: .public)")
             // A switch that cannot be found or read now will not be in a moment either, so
@@ -492,13 +511,7 @@ final class Concealer27: ObservableObject {
     /// with only the active bar's geometry to go by this watched the wrong display for two days.
     private func checkStuckOverflow() async {
         guard backend == .assessment else {
-            // Folded items with no way back were an artefact of assessment mode: the native
-            // switch gives the room back as MenuBarAgent lays the bar out, so there is nothing
-            // to watch for, and a notice left over from the other method goes with it.
-            stuckDisagreements = 0
-            if isOverflowStuck {
-                isOverflowStuck = false
-            }
+            clearOverflowNotice()
             return
         }
         guard isConcealing else {
@@ -594,6 +607,15 @@ final class Concealer27: ObservableObject {
             logger.notice("A notched bar looks stuck: items folded away with no overflow button")
         } else {
             logger.notice("The notched bar lays its items out again")
+        }
+    }
+
+    /// Folded items with no way back were an artefact of assessment mode: the native switch gives
+    /// the room back as MenuBarAgent lays the bar out, so a notice left over from it goes.
+    private func clearOverflowNotice() {
+        stuckDisagreements = 0
+        if isOverflowStuck {
+            isOverflowStuck = false
         }
     }
 
