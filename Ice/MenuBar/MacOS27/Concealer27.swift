@@ -42,8 +42,19 @@ final class Concealer27: ObservableObject {
     /// concealment falls back to assessment mode rather than leave everything shown.
     private var nativeFailed = false
 
-    /// The method in force since the last ``update()``.
+    /// The method in force since the last ``update(force:)``.
     private var backend = Backend.assessment
+
+    /// What an update applied, so one that would apply the same again can be skipped.
+    private struct Applied: Equatable {
+        let backend: Backend
+        let target: [Set<String>]
+        /// The running applications an assertion's allow list is built from; `nil` with the native switch.
+        let running: Set<String>?
+    }
+
+    /// What the last update applied, or `nil` once that no longer holds and the next must apply.
+    private var lastApplied: Applied?
 
     /// Applications meant to be concealed that MenuBarAgent did not track at the last native
     /// apply, so there was no switch to turn off yet (see ``reapplyWhileLaunching(bundleID:)``).
@@ -160,7 +171,7 @@ final class Concealer27: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.update()
+                self?.update(force: true)
             }
         })
         // `didLaunchApplicationNotification` arrives only once an application has finished
@@ -210,7 +221,7 @@ final class Concealer27: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 MainActor.assumeIsolated {
-                    self?.update()
+                    self?.update(force: true)
                 }
             }
             .store(in: &cancellables)
@@ -259,7 +270,7 @@ final class Concealer27: ObservableObject {
                     self.logger.notice("Hiding method changed to \(method.rawValue, privacy: .public)")
                     // A lift in progress belongs to assessment mode; the new method starts clean.
                     self.suspendedUntil = nil
-                    self.update()
+                    self.update(force: true)
                 }
             }
             .store(in: &cancellables)
@@ -278,7 +289,7 @@ final class Concealer27: ObservableObject {
                     self.nativeIsAvailable = NativeAllowListConcealer27.isAvailable
                     self.nativeFailed = false
                     self.logger.notice("Full Disk Access granted; native switch available: \(self.nativeIsAvailable, privacy: .public)")
-                    self.update()
+                    self.update(force: true)
                 }
             }
             .store(in: &cancellables)
@@ -286,7 +297,11 @@ final class Concealer27: ObservableObject {
     }
 
     /// Derives what to conceal from Ice's sections and applies it.
-    func update() {
+    ///
+    /// An update that would apply what was last applied stops short of applying it.
+    /// - Parameter force: Applies all the same, for a caller that knows something outside Ice
+    ///   changed: the bar was laid out again, or MenuBarAgent's list may have.
+    func update(force: Bool = false) {
         guard let appState else {
             return
         }
@@ -325,6 +340,11 @@ final class Concealer27: ObservableObject {
             }
             return application.processIdentifier
         })
+        let applied = Applied(backend: backend, target: target, running: backend == .assessment ? running : nil)
+        guard force || applied != lastApplied else {
+            return
+        }
+        lastApplied = applied
         lastChangeAt = .now
         let previous = applyTask
         // Each method releases whatever the other holds before applying its own, so a change of
@@ -344,6 +364,7 @@ final class Concealer27: ObservableObject {
                     try await controller.apply(target: target, running: running)
                 } catch {
                     logger.error("Could not apply concealment: \(error, privacy: .public)")
+                    self?.lastApplied = nil
                 }
             }
         }
@@ -406,9 +427,9 @@ final class Concealer27: ObservableObject {
             switch error as? NativeAllowListConcealer27.Failure {
             case .unavailable, .unreadable:
                 nativeFailed = true
-                update()
+                update(force: true)
             default:
-                break
+                lastApplied = nil
             }
         }
     }
@@ -435,7 +456,7 @@ final class Concealer27: ObservableObject {
                 guard let self, backend == .native, untrackedConcealed.contains(bundleID) else {
                     return
                 }
-                update()
+                update(force: true)
             }
         }
     }
@@ -624,6 +645,7 @@ final class Concealer27: ObservableObject {
         suspendedUntil = .now + duration
         isConcealing = false
         concealedPIDs.removeAll()
+        lastApplied = nil
         let previous = applyTask
         applyTask = Task { [controller] in
             await previous?.value
@@ -661,6 +683,7 @@ final class Concealer27: ObservableObject {
         suspendedUntil = .now + duration
         isConcealing = false
         concealedPIDs.removeAll()
+        lastApplied = nil
         let previous = applyTask
         let release = Task { [controller] in
             await previous?.value
