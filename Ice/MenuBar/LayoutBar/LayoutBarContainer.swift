@@ -321,9 +321,31 @@ final class LayoutBarContainer: NSView {
         // changes from within view updates is not allowed". The cache `setSection`
         // refreshes is read in a task of its own, so it still lands after the drop has let
         // the container arrange its views again.
+        let order = positionKeys(around: draggingSource)
         DispatchQueue.main.async {
             appState.concealer27.setSection(section, for: bundleID)
+            if let order {
+                ItemPositions27.place(order.item, leftNeighbours: order.left, rightNeighbours: order.right)
+            }
         }
+    }
+
+    /// The saved-position keys of a dropped item and its neighbours in this row, nearest first.
+    private func positionKeys(around view: LayoutBarItemView) -> (item: String, left: [String], right: [String])? {
+        func key(_ view: LayoutBarItemView) -> String? {
+            guard !view.item.isControlItem, let bundleID = view.item.sourceApplication?.bundleIdentifier else {
+                return nil
+            }
+            return ItemOrder27.key(bundleID: bundleID, title: view.item.tag.title)
+        }
+        guard let index = arrangedViews.firstIndex(of: view), let item = key(view) else {
+            return nil
+        }
+        return (
+            item,
+            arrangedViews[..<index].reversed().compactMap(key),
+            arrangedViews[(index + 1)...].compactMap(key)
+        )
     }
 }
 

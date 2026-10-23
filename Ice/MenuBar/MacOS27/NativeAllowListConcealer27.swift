@@ -154,40 +154,12 @@ final class NativeAllowListConcealer27 {
 
 @available(macOS 27.0, *)
 extension NativeAllowListConcealer27 {
-    /// CoreFoundation's container-aware preference calls, looked up at first use.
-    ///
-    /// They are private, so their absence is an answer rather than a crash: without them
-    /// ``NativeAllowListConcealer27/isAvailable`` is false and the concealer uses assessment mode.
-    private struct Preferences {
-        typealias Copy = @convention(c) (CFString, CFString, CFString, CFString, CFString) -> Unmanaged<CFPropertyList>?
-        typealias SetValue = @convention(c) (CFString, CFPropertyList?, CFString, CFString, CFString, CFString) -> Void
-        typealias Synchronize = @convention(c) (CFString, CFString, CFString, CFString) -> Bool
+    /// MenuBarAgent's `trackedApplications` list (see ``GroupPreferences27``).
+    private enum Preferences {
+        static let key = "trackedApplications"
 
-        let copy: Copy
-        let set: SetValue
-        let synchronize: Synchronize
-
-        static let shared: Preferences? = {
-            guard
-                let handle = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_NOW),
-                let copy = dlsym(handle, "_CFPreferencesCopyValueWithContainer"),
-                let set = dlsym(handle, "_CFPreferencesSetValueWithContainer"),
-                let synchronize = dlsym(handle, "_CFPreferencesSynchronizeWithContainer")
-            else {
-                return nil
-            }
-            return Preferences(
-                copy: unsafeBitCast(copy, to: Copy.self),
-                set: unsafeBitCast(set, to: SetValue.self),
-                synchronize: unsafeBitCast(synchronize, to: Synchronize.self)
-            )
-        }()
-
-        static let key = "trackedApplications" as CFString
-        static let applicationID = "group.com.apple.controlcenter" as CFString
-
-        static var container: CFString {
-            (NSHomeDirectory() + "/Library/Group Containers/group.com.apple.controlcenter") as CFString
+        static var shared: GroupPreferences27? {
+            GroupPreferences27.isAvailable ? .controlCenter : nil
         }
 
         static func read() throws -> [Any] {
@@ -195,8 +167,7 @@ extension NativeAllowListConcealer27 {
                 throw Failure.unavailable
             }
             guard
-                let value = shared.copy(key, applicationID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost, container)?.takeRetainedValue(),
-                let data = value as? Data,
+                let data = shared.value(forKey: key) as? Data,
                 let array = TrackedApplications27.decode(data)
             else {
                 throw Failure.unreadable
@@ -208,9 +179,7 @@ extension NativeAllowListConcealer27 {
             guard let shared else {
                 throw Failure.unavailable
             }
-            let data = try TrackedApplications27.encode(array)
-            shared.set(key, data as CFData, applicationID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost, container)
-            guard shared.synchronize(applicationID, kCFPreferencesCurrentUser, kCFPreferencesAnyHost, container) else {
+            guard shared.set(try TrackedApplications27.encode(array), forKey: key) else {
                 throw Failure.notSynchronized
             }
         }
