@@ -17,6 +17,9 @@ final class AppSettings: ObservableObject {
     /// The model for the app's Hotkeys settings.
     let hotkeys = HotkeysSettings()
 
+    /// The model for the app's notch hiding settings.
+    let notch = NotchSettings()
+
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
@@ -25,6 +28,7 @@ final class AppSettings: ObservableObject {
         advanced.performSetup(with: appState)
         general.performSetup(with: appState)
         hotkeys.performSetup(with: appState)
+        notch.performSetup(with: appState)
         configureCancellables()
     }
 
@@ -42,6 +46,11 @@ final class AppSettings: ObservableObject {
             }
             .store(in: &c)
         hotkeys.objectWillChange
+            .sink { [weak self] in
+                self?.objectWillChange.send()
+            }
+            .store(in: &c)
+        notch.objectWillChange
             .sink { [weak self] in
                 self?.objectWillChange.send()
             }

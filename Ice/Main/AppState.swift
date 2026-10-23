@@ -31,6 +31,9 @@ final class AppState: ObservableObject {
     /// Manager for the menu bar's appearance.
     let appearanceManager = MenuBarAppearanceManager()
 
+    /// Manager for hiding the notch by rewriting the desktop wallpaper.
+    let notchHidingManager = NotchHidingManager()
+
     /// Manager for menu bar item spacing.
     let spacingManager = MenuBarItemSpacingManager()
 
@@ -127,6 +130,7 @@ final class AppState: ObservableObject {
         }
 
         appearanceManager.performSetup(with: self)
+        notchHidingManager.performSetup(with: self)
         hidEventManager.performSetup(with: self)
         if #available(macOS 27.0, *) {
             // Hiding does not need the item cache, and the first read of the items can
