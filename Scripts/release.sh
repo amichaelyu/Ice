@@ -61,8 +61,7 @@ run_logged() {
 }
 
 echo "==> Archiving"
-# Signing comes from here, not the project: the targets name no team, which Scripts/install.sh
-# needs for its ad-hoc fallback on Macs without a certificate.
+# Signing comes from here, not the project, which names no team.
 run_logged archive xcodebuild archive \
     -project "$ROOT/Ice.xcodeproj" -scheme Ice -configuration Release \
     -destination 'generic/platform=macOS' -derivedDataPath "$DERIVED" -archivePath "$ARCHIVE" \

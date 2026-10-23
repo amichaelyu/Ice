@@ -5,7 +5,7 @@
 # is concealed after the window closes and stays so after Ice restarts. The layout is
 # restored afterwards.
 #
-# Requirements: Ice installed with Scripts/install.sh, EXT_APP with a window on the
+# Requirements: Ice installed, EXT_APP with a window on the
 # external display, TEST_LABEL/TEST_BUNDLE naming a visible application with a menu bar
 # item. Leave the mouse and keyboard alone.
 #

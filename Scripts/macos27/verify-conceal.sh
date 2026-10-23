@@ -4,7 +4,7 @@
 # after launch, reveals the hidden section on hover without exposing always-hidden items, and
 # every item comes back when Ice quits.
 #
-# Requirements: Ice installed with Scripts/install.sh, Thaw not running, the
+# Requirements: Ice installed, Thaw not running, the
 # external display at the origin, and no app menus reaching into REGION.
 #
 # Usage: Scripts/macos27/verify-conceal.sh [empty-x] [empty-y]

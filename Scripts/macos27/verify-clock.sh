@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Verifies that the clock and Control Center open while Ice conceals items on macOS 27.
-# Requirements: Ice installed with Scripts/install.sh, Thaw not running.
+# Requirements: Ice installed, Thaw not running.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

@@ -12,7 +12,7 @@
 # A revealed section appears on every display, so each check reads the external
 # bar: the built-in bar folds most items behind its overflow button.
 #
-# Requirements: Ice installed with Scripts/install.sh, Thaw not running, EXT_APP
+# Requirements: Ice installed, Thaw not running, EXT_APP
 # with a window on the external display and BUILTIN_APP with one on the built-in
 # display. The application frontmost when the script starts decides the display
 # Ice's icon lives on, so run it once with each display's menu bar active. Leave

@@ -4,7 +4,7 @@
 # the Ice Bar's display — also when the other display's menu bar is active — and the
 # application is concealed again once it closes.
 #
-# Requirements: Ice installed with Scripts/install.sh, EXT_APP with a window on the
+# Requirements: Ice installed, EXT_APP with a window on the
 # external display. CLICK_LABEL names a hidden item whose click opens a menu that Escape
 # closes (list the labels with icebar-ax while the Ice Bar is open). Leave the mouse and
 # keyboard alone.

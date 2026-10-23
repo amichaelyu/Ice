@@ -4,7 +4,7 @@
 # Bar on that display only, with an image of every hidden application's items, without
 # taking the front from the active application; moving away closes it.
 #
-# Requirements: Ice installed with Scripts/install.sh, EXT_APP with a window on the
+# Requirements: Ice installed, EXT_APP with a window on the
 # external display, MacOS27Layout set. Leave the mouse and keyboard alone.
 #
 # Usage: Scripts/macos27/verify-icebar.sh <ext-empty-x> <ext-empty-y> <builtin-empty-x> <builtin-empty-y>
