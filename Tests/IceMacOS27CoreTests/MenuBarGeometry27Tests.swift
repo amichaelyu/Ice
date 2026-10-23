@@ -118,69 +118,76 @@ struct ItemHitTest27Tests {
 
 @Suite("AccessibilityScanSchedule27")
 struct AccessibilityScanSchedule27Tests {
-    @Test("A process is asked with the normal timeout")
-    func normal() {
-        let schedule = AccessibilityScanSchedule27()
-        #expect(schedule.timeout(for: 10, now: 0) == AccessibilityScanSchedule27.normalTimeout)
+    typealias Schedule = AccessibilityScanSchedule27
+
+    @Test("The first read is a sweep, and the next one comes a minute later")
+    func sweeps() {
+        var schedule = Schedule()
+        #expect(schedule.isSweepDue(now: 0))
+        schedule.recordSweep(now: 0)
+        #expect(!schedule.isSweepDue(now: 59))
+        #expect(schedule.isSweepDue(now: 60))
     }
 
-    @Test("A process that timed out is skipped for a minute, then retried briefly")
-    func backoff() {
-        var schedule = AccessibilityScanSchedule27()
-        schedule.record(pid: 10, timedOut: true, now: 0)
-        #expect(schedule.timeout(for: 10, now: 1) == nil)
-        #expect(schedule.timeout(for: 10, now: 59) == nil)
-        #expect(schedule.timeout(for: 10, now: 60) == AccessibilityScanSchedule27.retryTimeout)
-        schedule.record(pid: 10, timedOut: true, now: 60)
-        #expect(schedule.timeout(for: 10, now: 179) == nil)
-        #expect(schedule.timeout(for: 10, now: 180) == AccessibilityScanSchedule27.retryTimeout)
+    @Test("A sweep asks every process with the normal timeout")
+    func sweep() {
+        var schedule = Schedule()
+        schedule.update(running: [10], now: 0)
+        #expect(schedule.timeout(for: 10, sweeping: true, now: 0) == Schedule.normalTimeout)
     }
 
-    @Test("The pause stops growing at ten minutes")
-    func cap() {
-        var schedule = AccessibilityScanSchedule27()
-        var now: TimeInterval = 0
-        for _ in 0..<8 {
-            schedule.record(pid: 10, timedOut: true, now: now)
-            while schedule.timeout(for: 10, now: now) == nil {
-                now += 1
-            }
-        }
-        schedule.record(pid: 10, timedOut: true, now: now)
-        #expect(schedule.timeout(for: 10, now: now + 599) == nil)
-        #expect(schedule.timeout(for: 10, now: now + 600) == AccessibilityScanSchedule27.retryTimeout)
+    @Test("A process without items is left out of reads between sweeps")
+    func noItems() {
+        var schedule = Schedule()
+        schedule.update(running: [10], now: 0)
+        schedule.record(pid: 10, timedOut: false, hasItems: false)
+        schedule.recordSweep(now: 0)
+        #expect(schedule.timeout(for: 10, sweeping: false, now: 1) == nil)
     }
 
-    @Test("A process that answers is asked normally again")
-    func recovery() {
-        var schedule = AccessibilityScanSchedule27()
-        schedule.record(pid: 10, timedOut: true, now: 0)
-        schedule.record(pid: 10, timedOut: false, now: 60)
-        #expect(schedule.timeout(for: 10, now: 61) == AccessibilityScanSchedule27.normalTimeout)
-    }
-
-    @Test("A process that has shown items is never skipped")
+    @Test("A process that has shown items is always asked, even when it timed out")
     func itemOwners() {
-        var schedule = AccessibilityScanSchedule27()
-        schedule.recordItems(pid: 10)
-        schedule.record(pid: 10, timedOut: true, now: 0)
-        #expect(schedule.timeout(for: 10, now: 1) == AccessibilityScanSchedule27.normalTimeout)
+        var schedule = Schedule()
+        schedule.update(running: [10], now: 0)
+        schedule.record(pid: 10, timedOut: false, hasItems: true)
+        schedule.record(pid: 10, timedOut: true, hasItems: false)
+        #expect(schedule.itemOwners == [10])
+        #expect(schedule.timeout(for: 10, sweeping: false, now: 1) == Schedule.normalTimeout)
     }
 
-    @Test("An exited item owner is forgotten too")
-    func exitedItemOwner() {
-        var schedule = AccessibilityScanSchedule27()
-        schedule.recordItems(pid: 10)
-        schedule.retain(running: [11])
-        schedule.record(pid: 10, timedOut: true, now: 0)
-        #expect(schedule.timeout(for: 10, now: 1) == nil)
+    @Test("A process that started after the first sweep is asked during its first seconds")
+    func launch() {
+        var schedule = Schedule()
+        schedule.update(running: [10], now: 0)
+        schedule.recordSweep(now: 0)
+        schedule.update(running: [10, 11], now: 5)
+        #expect(schedule.timeout(for: 10, sweeping: false, now: 5) == nil)
+        #expect(schedule.timeout(for: 11, sweeping: false, now: 5) == Schedule.normalTimeout)
+        #expect(schedule.timeout(for: 11, sweeping: false, now: 5 + Schedule.launchInterval) == nil)
+    }
+
+    @Test("A process that timed out is left out until the next sweep, which asks it briefly")
+    func unanswered() {
+        var schedule = Schedule()
+        schedule.update(running: [10], now: 0)
+        schedule.recordSweep(now: 0)
+        schedule.update(running: [10, 11], now: 1)
+        schedule.record(pid: 11, timedOut: true, hasItems: false)
+        #expect(schedule.timeout(for: 11, sweeping: false, now: 2) == nil)
+        #expect(schedule.timeout(for: 11, sweeping: true, now: 60) == Schedule.retryTimeout)
+        schedule.record(pid: 11, timedOut: false, hasItems: false)
+        #expect(schedule.timeout(for: 11, sweeping: true, now: 120) == Schedule.normalTimeout)
     }
 
     @Test("Exited processes are forgotten, so a reused identifier starts fresh")
     func forgetting() {
-        var schedule = AccessibilityScanSchedule27()
-        schedule.record(pid: 10, timedOut: true, now: 0)
-        schedule.retain(running: [11])
-        #expect(schedule.timeout(for: 10, now: 1) == AccessibilityScanSchedule27.normalTimeout)
+        var schedule = Schedule()
+        schedule.update(running: [10], now: 0)
+        schedule.record(pid: 10, timedOut: false, hasItems: true)
+        schedule.recordSweep(now: 0)
+        schedule.update(running: [11], now: 1)
+        #expect(schedule.itemOwners.isEmpty)
+        schedule.update(running: [10, 11], now: 2)
+        #expect(schedule.timeout(for: 10, sweeping: false, now: 2) == Schedule.normalTimeout)
     }
 }

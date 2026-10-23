@@ -357,7 +357,9 @@ extension MenuBarItemManager {
     /// Before caching, this method ensures that the control items for
     /// the hidden and always-hidden sections are correctly ordered,
     /// arranging them into valid positions if needed.
-    func cacheItemsRegardless(_ currentItemWindowIDs: [CGWindowID]? = nil) async {
+    ///
+    /// - Parameter currentItems: Items just read, to cache instead of reading them again.
+    func cacheItemsRegardless(_ currentItemWindowIDs: [CGWindowID]? = nil, currentItems: [MenuBarItem]? = nil) async {
         await cacheActor.runCacheTask { [weak self] in
             guard let self else {
                 return
@@ -369,7 +371,12 @@ extension MenuBarItemManager {
             }
 
             let displayID = Bridging.getActiveMenuBarDisplayID()
-            var items = await MenuBarItem.getMenuBarItems(option: .activeSpace)
+            var items: [MenuBarItem]
+            if let currentItems {
+                items = currentItems
+            } else {
+                items = await MenuBarItem.getMenuBarItems(option: .activeSpace)
+            }
 
             let itemWindowIDs = currentItemWindowIDs ?? items.reversed().map { $0.windowID }
             await cacheActor.updateCachedItemWindowIDs(itemWindowIDs)
@@ -401,11 +408,7 @@ extension MenuBarItemManager {
                 return
             }
 
-            // Moving items is not supported on macOS 27 yet (plan 2), so the dividers
-            // stay where macOS placed them.
-            if #unavailable(macOS 27.0) {
-                await enforceControlItemOrder(controlItems: controlItems)
-            }
+            await enforceControlItemOrder(controlItems: controlItems)
             await uncheckedCacheItems(items: items, controlItems: controlItems, displayID: displayID)
         }
     }
@@ -436,7 +439,7 @@ extension MenuBarItemManager {
             let items = await MenuBarItem.getMenuBarItems(option: .activeSpace)
             let signature = items.map { $0.windowID &+ UInt32(truncatingIfNeeded: Int($0.bounds.minX)) }
             if await cacheActor.cachedItemWindowIDs != signature {
-                await cacheItemsRegardless(signature)
+                await cacheItemsRegardless(signature, currentItems: items)
             }
             return
         }
