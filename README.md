@@ -3,11 +3,19 @@
     <h1>Ice</h1>
 </div>
 
+> [!IMPORTANT]
+> This is a fork of [jordanbaird/Ice](https://github.com/jordanbaird/Ice) that restores hiding, the Ice Bar and the Menu Bar Layout editor on macOS 27. It is built from the upstream pull request [jordanbaird/Ice#995](https://github.com/jordanbaird/Ice/pull/995) by [RabenkoYevhenii](https://github.com/RabenkoYevhenii), which adapts the assessment-mode approach from [Thaw](https://github.com/thaw-app/Thaw) and [Barometer](https://github.com/mackid1993/Barometer). All of them are GPLv3. Releases here are Developer ID signed and notarized; see [Install](#install) below.
+>
+> Known limitations on macOS 27:
+>
+> - Items cannot be reordered on the bar. macOS 27 arranges them itself; sections come from the per-application layout in Ice's settings.
+> - Opening a system item's panel, such as the clock or Wi-Fi, while items are hidden takes about 150 ms longer.
+
 Ice is a powerful menu bar management tool. While its primary function is hiding and showing menu bar items, it aims to cover a wide variety of additional features to make it one of the most versatile menu bar tools available.
 
 ![Banner](https://github.com/user-attachments/assets/4423085c-4e4b-4f3d-ad0f-90a217c03470)
 
-[![Download](https://img.shields.io/badge/download-latest-brightgreen?style=flat-square)](https://github.com/jordanbaird/Ice/releases/latest)
+[![Download](https://img.shields.io/badge/download-latest-brightgreen?style=flat-square)](https://github.com/amichaelyu/Ice/releases/latest)
 ![Platform](https://img.shields.io/badge/platform-macOS-blue?style=flat-square)
 ![Requirements](https://img.shields.io/badge/requirements-macOS%2014%2B-fa4e49?style=flat-square)
 [![Sponsor](https://img.shields.io/badge/Sponsor%20%E2%9D%A4%EF%B8%8F-8A2BE2?style=flat-square)](https://github.com/sponsors/jordanbaird)
@@ -15,7 +23,7 @@ Ice is a powerful menu bar management tool. While its primary function is hiding
 [![License](https://img.shields.io/github/license/jordanbaird/Ice?style=flat-square)](LICENSE)
 
 > [!NOTE]
-> Ice is currently in active development. Some features have not yet been implemented. Download the latest release [here](https://github.com/jordanbaird/Ice/releases/latest) and see the roadmap below for upcoming features.
+> Ice is currently in active development. Some features have not yet been implemented. Download the latest release [here](https://github.com/amichaelyu/Ice/releases/latest) and see the roadmap below for upcoming features.
 
 <a href="https://www.buymeacoffee.com/jordanbaird" target="_blank">
     <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;">
@@ -25,15 +33,19 @@ Ice is a powerful menu bar management tool. While its primary function is hiding
 
 ### Manual Installation
 
-Download the "Ice.zip" file from the [latest release](https://github.com/jordanbaird/Ice/releases/latest) and move the unzipped app into your `Applications` folder.
+Download the "Ice.zip" file from the [latest release](https://github.com/amichaelyu/Ice/releases/latest) and move the unzipped app into your `Applications` folder.
 
 ### Homebrew
 
 Install Ice using the following command:
 
 ```sh
-brew install --cask jordanbaird-ice
+brew install --cask amichaelyu/tap/ice
 ```
+
+### Switching from the official build
+
+Quit the official Ice first. Your settings carry over, because the bundle identifier is unchanged. macOS keys the Accessibility and Screen Recording permissions to the app's signing identity, so remove Ice from both lists in System Settings > Privacy & Security and grant them again when this build asks. Screen Recording is only needed for the icons shown in the Ice Bar.
 
 ## Features/Roadmap
 
