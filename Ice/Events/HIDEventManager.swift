@@ -44,6 +44,45 @@ final class HIDEventManager: ObservableObject {
     /// Whether ``systemItemClickTap`` is running (see `updateSystemItemClickTap`).
     private var isSystemItemClickTapRunning = false
 
+    /// Whether ``mouseMovedTap`` is running (see `updateMouseMovedTap`).
+    private var isMouseMovedTapRunning = false
+
+    /// The pending show or hide from hovering, and whether it shows. One at a time, so the
+    /// moves within the delay do not each start their own.
+    private var showOnHoverTask: (task: Task<Void, Never>, shows: Bool)?
+
+    /// The display whose menu bar the last mouse move was inside, if any.
+    private var menuBarUnderMouse: CGDirectDisplayID?
+
+    /// The stretch of each display's bar the application menus occupy on macOS 27, worked out
+    /// whenever the menus are read (see `refreshApplicationMenus27`).
+    private var applicationMenuAreas27 = [CGDirectDisplayID: CGRect]()
+
+    /// Whether the application menus are being read, and whether to read them again after.
+    private var isReadingApplicationMenus27 = false
+    private var needsApplicationMenuReread27 = false
+
+    /// A second read shortly after the owner changes, for menus the application builds late.
+    private var applicationMenuRereadTask27: Task<Void, Never>?
+
+    /// How far an application's menus reached on a display, the last time it was the active one
+    /// there. Each display draws the menus of whatever is frontmost on it, and Accessibility
+    /// describes only the active display's, so this is the one exact measurement to be had of
+    /// the others (measured on macOS 27.0: asked about any display, Accessibility answers with
+    /// the active one's menu bar, in its coordinates).
+    ///
+    /// Kept for this run only: the menus are read at every activation, so it fills as the user
+    /// goes round the displays, and display identifiers do not stay put across launches.
+    private var menuReachByDisplay27 = [CGDirectDisplayID: [String: CGFloat]]()
+
+    /// Which application last owned the menu bar of each display.
+    ///
+    /// A display that is not the active one goes on drawing the menus of the application that was
+    /// last active on it, which is not the same as whatever window happens to lie topmost there —
+    /// measured 2026-10-08, where the topmost window on the external display belonged to one
+    /// application and its bar was drawing another's menus.
+    private var menuOwnerByDisplay27 = [CGDirectDisplayID: String]()
+
     /// A Boolean value that indicates whether the manager is enabled.
     private var isEnabled = false {
         didSet {
@@ -56,6 +95,7 @@ final class HIDEventManager: ObservableObject {
                     monitor.stop()
                 }
             }
+            updateMouseMovedTap()
             if #available(macOS 27.0, *) {
                 updateSystemItemClickTap()
             }
@@ -110,15 +150,25 @@ final class HIDEventManager: ObservableObject {
         return event
     }
 
-    /// Tap for mouse moved events.
+    /// Tap for mouse moved events, running only while show-on-hover is on (see
+    /// `updateMouseMovedTap`).
     private(set) lazy var mouseMovedTap = EventTap(
         type: .mouseMoved,
         location: .hidEventTap,
         placement: .tailAppendEventTap,
         option: .listenOnly
     ) { [weak self] _, event in
-        if let self, isEnabled, let appState, let screen = bestScreen(appState: appState) {
-            handleShowOnHover(appState: appState, screen: screen)
+        let location = MouseLocation(event)
+        if let self, isEnabled, let appState, let screen = bestScreen(for: location) {
+            if #available(macOS 27.0, *) {
+                let menuBar = isMouseInsideMenuBar(appState: appState, screen: screen, at: location) ? screen.displayID : nil
+                if let menuBar, menuBar != menuBarUnderMouse {
+                    // Catches menus that changed without the application being activated again.
+                    refreshApplicationMenus27()
+                }
+                menuBarUnderMouse = menuBar
+            }
+            handleShowOnHover(appState: appState, screen: screen, at: location)
         }
         return event
     }
@@ -161,7 +211,6 @@ final class HIDEventManager: ObservableObject {
         mouseDownMonitor,
         mouseUpMonitor,
         mouseDraggedMonitor,
-        mouseMovedTap,
         scrollWheelMonitor,
     ]
 
@@ -199,6 +248,43 @@ final class HIDEventManager: ObservableObject {
             .store(in: &c)
         }
 
+        appState?.settings.general.$showOnHover
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.updateMouseMovedTap()
+                }
+            }
+            .store(in: &c)
+
+        if #available(macOS 27.0, *), let appState {
+            // The menus are read when they change hands, and when the active display changes,
+            // rather than on every mouse move (see `refreshApplicationMenus27`).
+            NSWorkspace.shared.publisher(for: \.menuBarOwningApplication)
+                .removeDuplicates()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.applicationMenuOwnerDidChange27()
+                    }
+                }
+                .store(in: &c)
+            Publishers.Merge(
+                appState.$activeSpace.map { _ in () },
+                NotificationCenter.default
+                    .publisher(for: NSApplication.didChangeScreenParametersNotification)
+                    .map { _ in () }
+            )
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.refreshApplicationMenus27()
+                }
+            }
+            .store(in: &c)
+        }
+
         if #available(macOS 27.0, *), let concealer = appState?.concealer27 {
             // The backend is set by the same `update` that publishes `isConcealing`.
             concealer.$isConcealing
@@ -213,6 +299,25 @@ final class HIDEventManager: ObservableObject {
         }
 
         cancellables = c
+    }
+
+    /// Runs ``mouseMovedTap`` only while show-on-hover is on, which is all it serves.
+    private func updateMouseMovedTap() {
+        let shouldRun = isEnabled && appState?.settings.general.showOnHover == true
+        if !shouldRun {
+            showOnHoverTask?.task.cancel()
+            showOnHoverTask = nil
+            menuBarUnderMouse = nil
+        }
+        guard shouldRun != isMouseMovedTapRunning else {
+            return
+        }
+        isMouseMovedTapRunning = shouldRun
+        if shouldRun {
+            mouseMovedTap.start()
+        } else {
+            mouseMovedTap.stop()
+        }
     }
 
     /// Runs ``systemItemClickTap`` only while assessment mode conceals something.
@@ -848,11 +953,12 @@ extension HIDEventManager {
 
     // MARK: Handle Show On Hover
 
-    private func handleShowOnHover(appState: AppState, screen: NSScreen) {
+    private func handleShowOnHover(appState: AppState, screen: NSScreen, at location: MouseLocation? = nil) {
         // Make sure the "ShowOnHover" feature is enabled and allowed.
         guard
             appState.settings.general.showOnHover,
-            appState.menuBarManager.showOnHoverAllowed
+            appState.menuBarManager.showOnHoverAllowed,
+            let location = location ?? .current
         else {
             return
         }
@@ -862,42 +968,70 @@ extension HIDEventManager {
             return
         }
 
-        let delay = appState.settings.advanced.showOnHoverDelay
-
         if hiddenSection.isHidden {
-            guard isMouseInsideEmptyMenuBarSpace(appState: appState, screen: screen) else {
+            guard isMouseInsideEmptyMenuBarSpace(appState: appState, screen: screen, at: location) else {
+                cancelShowOnHover(shows: true)
                 return
             }
-            if let location = MouseHelpers.locationCoreGraphics {
-                lastEmptyMenuBarPoints[screen.displayID] = location
-            }
-            Task {
-                try await Task.sleep(for: .seconds(delay))
+            lastEmptyMenuBarPoints[screen.displayID] = location.coreGraphics
+            scheduleShowOnHover(shows: true, appState: appState) { [weak self] in
                 // Make sure the mouse is still inside.
-                guard isMouseInsideEmptyMenuBarSpace(appState: appState, screen: screen) else {
+                guard let self, isMouseInsideEmptyMenuBarSpace(appState: appState, screen: screen) else {
                     return
                 }
                 hiddenSection.show()
             }
         } else {
             guard
-                !isMouseInsideMenuBar(appState: appState, screen: screen),
-                !isMouseInsideIceBar(appState: appState)
+                !isMouseInsideMenuBar(appState: appState, screen: screen, at: location),
+                !isMouseInsideIceBar(appState: appState, at: location)
             else {
+                cancelShowOnHover(shows: false)
                 return
             }
-            Task {
-                try await Task.sleep(for: .seconds(delay))
+            scheduleShowOnHover(shows: false, appState: appState) { [weak self] in
                 // Make sure the mouse is still outside.
                 guard
-                    !isMouseInsideMenuBar(appState: appState, screen: screen),
-                    !isMouseInsideIceBar(appState: appState)
+                    let self,
+                    let location = MouseLocation.current,
+                    !isMouseInsideMenuBar(appState: appState, screen: screen, at: location),
+                    !isMouseInsideIceBar(appState: appState, at: location)
                 else {
                     return
                 }
                 hiddenSection.hide()
             }
         }
+    }
+
+    /// Runs the given show or hide once the hover delay has passed, unless one of the same kind
+    /// is already waiting, which keeps its place: the delay counts from the first move.
+    private func scheduleShowOnHover(shows: Bool, appState: AppState, action: @escaping @MainActor () -> Void) {
+        if let pending = showOnHoverTask {
+            guard pending.shows != shows else {
+                return
+            }
+            pending.task.cancel()
+        }
+        let delay = appState.settings.advanced.showOnHoverDelay
+        let task = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else {
+                return
+            }
+            self?.showOnHoverTask = nil
+            action()
+        }
+        showOnHoverTask = (task, shows)
+    }
+
+    /// Drops a waiting show or hide of the given kind, the pointer having left where it applies.
+    private func cancelShowOnHover(shows: Bool) {
+        guard let pending = showOnHoverTask, pending.shows == shows else {
+            return
+        }
+        pending.task.cancel()
+        showOnHoverTask = nil
     }
 
     // MARK: Handle Prevent Show On Hover
@@ -910,11 +1044,14 @@ extension HIDEventManager {
             return
         }
 
-        guard isMouseInsideMenuBar(appState: appState, screen: screen) else {
+        guard
+            let location = MouseLocation.current,
+            isMouseInsideMenuBar(appState: appState, screen: screen, at: location)
+        else {
             return
         }
 
-        if isMouseInsideMenuBarItem(appState: appState, screen: screen) {
+        if isMouseInsideMenuBarItem(appState: appState, screen: screen, at: location) {
             switch event.type {
             case .leftMouseDown:
                 if appState.menuBarManager.hasVisibleSection {
@@ -932,7 +1069,7 @@ extension HIDEventManager {
             default:
                 return
             }
-        } else if isMouseInsideApplicationMenu(appState: appState, screen: screen) {
+        } else if isMouseInsideApplicationMenu(appState: appState, screen: screen, at: location) {
             return
         }
 
@@ -965,6 +1102,24 @@ extension HIDEventManager {
 // MARK: - Helper Methods
 
 extension HIDEventManager {
+    /// Where the pointer is, in both coordinate spaces, read once for a whole hit test.
+    struct MouseLocation {
+        /// Origin at the top left of the main display.
+        let coreGraphics: CGPoint
+        /// Origin at the bottom left of the main display.
+        let appKit: CGPoint
+
+        init(_ event: CGEvent) {
+            coreGraphics = event.location
+            appKit = event.unflippedLocation
+        }
+
+        /// Where the pointer is right now.
+        static var current: MouseLocation? {
+            CGEvent(source: nil).map(MouseLocation.init)
+        }
+    }
+
     /// Returns the best screen to use for event manager calculations.
     /// Uses the screen under the mouse so menu bar hover/click work correctly
     /// with multiple displays (e.g. external monitor).
@@ -972,10 +1127,15 @@ extension HIDEventManager {
         NSScreen.screenWithMouse ?? NSScreen.main
     }
 
+    /// The screen under the given location, or the main screen.
+    private func bestScreen(for location: MouseLocation) -> NSScreen? {
+        NSScreen.screens.first { $0.frame.contains(location.appKit) } ?? NSScreen.main
+    }
+
     /// A Boolean value that indicates whether the mouse pointer is within
     /// the bounds of the menu bar.
-    func isMouseInsideMenuBar(appState: AppState, screen: NSScreen) -> Bool {
-        guard let mouseLocation = MouseHelpers.locationAppKit else {
+    func isMouseInsideMenuBar(appState: AppState, screen: NSScreen, at location: MouseLocation? = nil) -> Bool {
+        guard let mouseLocation = (location ?? .current)?.appKit else {
             return false
         }
 
@@ -1004,78 +1164,143 @@ extension HIDEventManager {
 
     /// A Boolean value that indicates whether the mouse pointer is within
     /// the bounds of the current application menu.
-    func isMouseInsideApplicationMenu(appState: AppState, screen: NSScreen) -> Bool {
-        guard let mouseLocation = MouseHelpers.locationCoreGraphics else {
-            return false
-        }
-        guard var applicationMenuFrame = screen.getApplicationMenuFrame() else {
+    func isMouseInsideApplicationMenu(appState: AppState, screen: NSScreen, at location: MouseLocation? = nil) -> Bool {
+        guard let mouseLocation = (location ?? .current)?.coreGraphics else {
             return false
         }
         if #available(macOS 27.0, *) {
-            // The menus come from the application that owns the menu bar, so the frame is in its
-            // display's coordinates whichever display is asked about. See `ApplicationMenuArea27`.
-            return Self.applicationMenuArea27(menuFrame: applicationMenuFrame, screen: screen)
-                .contains(mouseLocation)
+            // Read ahead of time, off the main thread (see `refreshApplicationMenus27`).
+            return applicationMenuAreas27[screen.displayID]?.contains(mouseLocation) ?? false
+        }
+        guard var applicationMenuFrame = screen.getApplicationMenuFrame() else {
+            return false
         }
         applicationMenuFrame.size.width += applicationMenuFrame.origin.x - screen.frame.origin.x
         applicationMenuFrame.origin.x = screen.frame.origin.x
         return applicationMenuFrame.contains(mouseLocation)
     }
 
-    /// How far an application's menus reached on a display, the last time it was the active one
-    /// there. Each display draws the menus of whatever is frontmost on it, and Accessibility
-    /// describes only the active display's, so this is the one exact measurement to be had of
-    /// the others (measured on macOS 27.0: asked about any display, Accessibility answers with
-    /// the active one's menu bar, in its coordinates).
-    private nonisolated(unsafe) static var menuReachByDisplay: [CGDirectDisplayID: [String: CGFloat]] = {
-        // Kept across launches: the measurement can only be taken while the display is the active
-        // one, and starting with none of it means guessing at every bar until the user has gone
-        // round the displays again.
-        guard let stored = Defaults.dictionary(forKey: .macOS27MenuReach) as? [String: [String: Double]] else {
-            return [:]
-        }
-        return stored.reduce(into: [:]) { result, pair in
-            guard let displayID = CGDirectDisplayID(pair.key) else {
+    // MARK: Application Menus (macOS 27)
+
+    /// How long each Accessibility message of a menu read may take. The menus belong to another
+    /// application, which may be busy, and the default wait is about six seconds.
+    private nonisolated static let applicationMenuTimeout: Float = 0.25
+
+    private nonisolated static let applicationMenuQueue = DispatchQueue(
+        label: "HIDEventManager.applicationMenuQueue",
+        qos: .userInitiated
+    )
+
+    /// Reads the menus now, and once more shortly after: an application that has just been
+    /// activated may not have built them yet.
+    @available(macOS 27.0, *)
+    private func applicationMenuOwnerDidChange27() {
+        refreshApplicationMenus27()
+        applicationMenuRereadTask27?.cancel()
+        applicationMenuRereadTask27 = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else {
                 return
             }
-            result[displayID] = pair.value.mapValues { CGFloat($0) }
+            self?.refreshApplicationMenus27()
         }
-    }()
+    }
 
-    /// Which application last owned the menu bar of each display.
-    ///
-    /// A display that is not the active one goes on drawing the menus of the application that was
-    /// last active on it, which is not the same as whatever window happens to lie topmost there —
-    /// measured 2026-10-08, where the topmost window on the external display belonged to one
-    /// application and its bar was drawing another's menus.
-    private nonisolated(unsafe) static var menuOwnerByDisplay: [CGDirectDisplayID: String] = {
-        guard let stored = Defaults.dictionary(forKey: .macOS27MenuOwner) as? [String: String] else {
-            return [:]
-        }
-        return stored.reduce(into: [:]) { result, pair in
-            guard let displayID = CGDirectDisplayID(pair.key) else {
-                return
-            }
-            result[displayID] = pair.value
-        }
-    }()
-
-    private static func rememberMenuReach(_ reach: CGFloat, forApplication bundleID: String, on displayID: CGDirectDisplayID) {
-        if menuOwnerByDisplay[displayID] != bundleID {
-            menuOwnerByDisplay[displayID] = bundleID
-            Defaults.set(
-                menuOwnerByDisplay.reduce(into: [String: String]()) { $0[String($1.key)] = $1.value },
-                forKey: .macOS27MenuOwner
-            )
-        }
-        guard menuReachByDisplay[displayID]?[bundleID] != reach else {
+    /// Reads the menus of the application that owns the menu bar off the main thread, and works
+    /// out from them the stretch of each display's bar they occupy.
+    @available(macOS 27.0, *)
+    private func refreshApplicationMenus27() {
+        guard !isReadingApplicationMenus27 else {
+            needsApplicationMenuReread27 = true
             return
         }
-        menuReachByDisplay[displayID, default: [:]][bundleID] = reach
-        let stored = menuReachByDisplay.reduce(into: [String: [String: Double]]()) { result, pair in
-            result[String(pair.key)] = pair.value.mapValues { Double($0) }
+        // Ice's own menus are left out, as they always were.
+        guard
+            let owner = NSWorkspace.shared.menuBarOwningApplication,
+            owner.processIdentifier != ProcessInfo.processInfo.processIdentifier
+        else {
+            applicationMenuAreas27 = [:]
+            return
         }
-        Defaults.set(stored, forKey: .macOS27MenuReach)
+        isReadingApplicationMenus27 = true
+        let pid = owner.processIdentifier
+        let bundleID = owner.bundleIdentifier
+        Self.applicationMenuQueue.async { [weak self] in
+            let menuFrame = Self.readApplicationMenuFrame(pid: pid)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else {
+                        return
+                    }
+                    self.isReadingApplicationMenus27 = false
+                    self.updateApplicationMenuAreas27(menuFrame: menuFrame, owner: bundleID)
+                    if self.needsApplicationMenuReread27 {
+                        self.needsApplicationMenuReread27 = false
+                        self.refreshApplicationMenus27()
+                    }
+                }
+            }
+        }
+    }
+
+    /// The union of the enabled application menus of the given process, as Accessibility reports
+    /// them. Gives up at the first message that times out.
+    private nonisolated static func readApplicationMenuFrame(pid: pid_t) -> CGRect? {
+        var timedOut = false
+        func value(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
+            AXUIElementSetMessagingTimeout(element, applicationMenuTimeout)
+            var value: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+            timedOut = timedOut || result == .cannotComplete
+            return result == .success ? value : nil
+        }
+        guard
+            let menuBar = value(AXUIElementCreateApplication(pid), kAXMenuBarAttribute),
+            CFGetTypeID(menuBar) == AXUIElementGetTypeID(),
+            let children = value(menuBar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement] // swiftlint:disable:this force_cast
+        else {
+            return nil
+        }
+        var menuFrame = CGRect.null
+        for child in children {
+            var frame = CGRect.zero
+            guard
+                value(child, kAXEnabledAttribute) as? Bool == true,
+                let frameValue = value(child, "AXFrame"),
+                CFGetTypeID(frameValue) == AXValueGetTypeID(),
+                AXValueGetValue(frameValue as! AXValue, .cgRect, &frame) // swiftlint:disable:this force_cast
+            else {
+                if timedOut {
+                    return nil
+                }
+                continue
+            }
+            menuFrame = menuFrame.union(frame)
+        }
+        return menuFrame.isNull || menuFrame.width <= 0 ? nil : menuFrame
+    }
+
+    /// Works out the menus' stretch of every display's bar from a fresh read of them.
+    @available(macOS 27.0, *)
+    private func updateApplicationMenuAreas27(menuFrame: CGRect?, owner: String?) {
+        guard let menuFrame else {
+            applicationMenuAreas27 = [:]
+            return
+        }
+        let screens = NSScreen.screens
+        if
+            let owner,
+            let ownerScreen = screens.first(where: { CGDisplayBounds($0.displayID).intersects(menuFrame) })
+        {
+            // Measurable right now, so it is remembered for when this display is not the active
+            // one and the same application is still frontmost on it.
+            let displayID = ownerScreen.displayID
+            menuOwnerByDisplay27[displayID] = owner
+            menuReachByDisplay27[displayID, default: [:]][owner] = menuFrame.maxX - CGDisplayBounds(displayID).minX
+        }
+        applicationMenuAreas27 = screens.reduce(into: [:]) { areas, screen in
+            areas[screen.displayID] = applicationMenuArea27(menuFrame: menuFrame, screen: screen)
+        }
     }
 
     /// The application frontmost on the given display, by its topmost ordinary window there.
@@ -1087,29 +1312,24 @@ extension HIDEventManager {
     }
 
     /// The stretch of the given screen's bar the application menus occupy on macOS 27.
+    ///
+    /// The menus come from the application that owns the menu bar, so the frame is in its
+    /// display's coordinates whichever display is asked about. See `ApplicationMenuArea27`.
     @available(macOS 27.0, *)
-    private static func applicationMenuArea27(menuFrame: CGRect, screen: NSScreen) -> CGRect {
+    private func applicationMenuArea27(menuFrame: CGRect, screen: NSScreen) -> CGRect {
         let displayBounds = CGDisplayBounds(screen.displayID)
         let ownerScreen = NSScreen.screens.first { CGDisplayBounds($0.displayID).intersects(menuFrame) } ?? screen
         let ownerBounds = CGDisplayBounds(ownerScreen.displayID)
-        if
-            ownerScreen == screen,
-            let owner = NSWorkspace.shared.menuBarOwningApplication?.bundleIdentifier
-        {
-            // Measurable right now, so it is remembered for when this display is not the active
-            // one and the same application is still frontmost on it.
-            Self.rememberMenuReach(menuFrame.maxX - displayBounds.minX, forApplication: owner, on: screen.displayID)
-        }
         var rememberedReach: CGFloat?
         if
             ownerScreen != screen,
             // The application whose menus that bar is drawing: the one that last owned the menu
             // bar there, or, until Ice has seen that happen, whatever lies topmost on it.
-            let drawing = Self.menuOwnerByDisplay[screen.displayID] ?? Self.frontmostApplication(on: displayBounds)
+            let drawing = menuOwnerByDisplay27[screen.displayID] ?? Self.frontmostApplication(on: displayBounds)
         {
             rememberedReach = ApplicationMenuArea27.reach(
-                onThisDisplay: Self.menuReachByDisplay[screen.displayID]?[drawing],
-                onOtherDisplays: Self.menuReachByDisplay
+                onThisDisplay: menuReachByDisplay27[screen.displayID]?[drawing],
+                onOtherDisplays: menuReachByDisplay27
                     .filter { $0.key != screen.displayID }
                     .compactMap { $0.value[drawing] }
             )
@@ -1136,10 +1356,12 @@ extension HIDEventManager {
         )
     }
 
+    // MARK: Hit Tests
+
     /// A Boolean value that indicates whether the mouse pointer is within
     /// the bounds of a menu bar item.
-    func isMouseInsideMenuBarItem(appState: AppState, screen: NSScreen) -> Bool {
-        guard let mouseLocation = MouseHelpers.locationCoreGraphics else {
+    func isMouseInsideMenuBarItem(appState: AppState, screen: NSScreen, at location: MouseLocation? = nil) -> Bool {
+        guard let mouseLocation = (location ?? .current)?.coreGraphics else {
             return false
         }
         if #available(macOS 27.0, *) {
@@ -1173,9 +1395,9 @@ extension HIDEventManager {
     /// the bounds of the screen's notch, if it has one.
     ///
     /// If the screen does not have a notch, this property returns `false`.
-    func isMouseInsideNotch(appState: AppState, screen: NSScreen) -> Bool {
+    func isMouseInsideNotch(appState: AppState, screen: NSScreen, at location: MouseLocation? = nil) -> Bool {
         guard
-            let mouseLocation = MouseHelpers.locationAppKit,
+            let mouseLocation = (location ?? .current)?.appKit,
             var frameOfNotch = screen.frameOfNotch
         else {
             return false
@@ -1186,27 +1408,30 @@ extension HIDEventManager {
 
     /// A Boolean value that indicates whether the mouse pointer is within
     /// the bounds of an empty space in the menu bar.
-    func isMouseInsideEmptyMenuBarSpace(appState: AppState, screen: NSScreen) -> Bool {
+    ///
+    /// The cheapest checks come first: this runs on every mouse move over the bar.
+    func isMouseInsideEmptyMenuBarSpace(appState: AppState, screen: NSScreen, at location: MouseLocation? = nil) -> Bool {
         guard
-            isMouseInsideMenuBar(appState: appState, screen: screen),
-            !isMouseInsideApplicationMenu(appState: appState, screen: screen),
-            !isMouseInsideMenuBarItem(appState: appState, screen: screen),
-            !isMouseInsideNotch(appState: appState, screen: screen)
+            let location = location ?? .current,
+            isMouseInsideMenuBar(appState: appState, screen: screen, at: location),
+            !isMouseInsideNotch(appState: appState, screen: screen, at: location)
         else {
             return false
         }
         if #available(macOS 27.0, *) {
-            // The gaps between items are part of the items' own run of the bar.
-            return !isMouseInsideItemsArea(appState: appState, screen: screen)
+            // The items area takes in the items themselves, and the gaps between them.
+            return !isMouseInsideApplicationMenu(appState: appState, screen: screen, at: location) &&
+            !isMouseInsideItemsArea(appState: appState, screen: screen, at: location)
         }
-        return true
+        return !isMouseInsideMenuBarItem(appState: appState, screen: screen, at: location) &&
+        !isMouseInsideApplicationMenu(appState: appState, screen: screen, at: location)
     }
 
     /// A Boolean value that indicates whether the mouse pointer rests in the part of the
     /// menu bar that holds items, including the gaps between them.
     @available(macOS 27.0, *)
-    func isMouseInsideItemsArea(appState: AppState, screen: NSScreen) -> Bool {
-        guard let mouseLocation = MouseHelpers.locationCoreGraphics else {
+    func isMouseInsideItemsArea(appState: AppState, screen: NSScreen, at location: MouseLocation? = nil) -> Bool {
+        guard let mouseLocation = (location ?? .current)?.coreGraphics else {
             return false
         }
         let items = appState.itemManager.itemCache.managedItems.map { item in
@@ -1230,8 +1455,8 @@ extension HIDEventManager {
 
     /// A Boolean value that indicates whether the mouse pointer is within
     /// the bounds of the Ice Bar panel.
-    func isMouseInsideIceBar(appState: AppState) -> Bool {
-        guard let mouseLocation = MouseHelpers.locationAppKit else {
+    func isMouseInsideIceBar(appState: AppState, at location: MouseLocation? = nil) -> Bool {
+        guard let mouseLocation = (location ?? .current)?.appKit else {
             return false
         }
         let panel = appState.menuBarManager.iceBarPanel
