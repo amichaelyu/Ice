@@ -822,7 +822,7 @@ final class Concealer27: ObservableObject {
                 guard let self, !launching.isEmpty else {
                     break
                 }
-                let items = await MenuBarItemProvider27.items()
+                let items = await MenuBarItemProvider27.items(pids: Set(launching.values.map(\.pid)))
                 let now = ContinuousClock.now
                 for (bundleID, entry) in launching {
                     if let item = items.first(where: { $0.ownerPID == entry.pid && $0.bounds.width > 4 }) {
