@@ -124,7 +124,8 @@ private struct MenuBarAppearanceEditorContentView: View {
     var body: some View {
         MenuBarAppearanceEditor(
             appearanceManager: appState.appearanceManager,
-            location: .panel
+            location: .panel,
+            additionalContent: AnyView(NotchSettingsSection(settings: appState.settings.notch))
         )
         .environmentObject(appState)
     }
