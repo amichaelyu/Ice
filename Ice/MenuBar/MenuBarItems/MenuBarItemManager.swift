@@ -410,6 +410,19 @@ extension MenuBarItemManager {
         }
     }
 
+    /// Sorts the cached items into sections again from the saved macOS 27
+    /// layout, without reading the menu bar.
+    @available(macOS 27.0, *)
+    func resortCachedItems27() {
+        guard let appState else {
+            return
+        }
+        let cache = appState.concealer27.cacheFromSavedLayout(items: itemCache.managedItems, displayID: itemCache.displayID)
+        if itemCache != cache {
+            itemCache = cache
+        }
+    }
+
     /// Caches the current menu bar items, if the items have changed
     /// since the previous cache.
     ///

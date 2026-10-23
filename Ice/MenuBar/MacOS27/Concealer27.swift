@@ -229,9 +229,11 @@ final class Concealer27: ObservableObject {
             }
             .store(in: &cancellables)
         let navigation = appState.navigationState
+        // Only the layout pane reveals everything (see `revealState`), so the other panes are not followed.
         navigation.$isSettingsPresented
             .combineLatest(navigation.$settingsNavigationIdentifier)
-            .removeDuplicates { $0.0 == $1.0 && $0.1 == $1.1 }
+            .map { $0 && $1 == .menuBarLayout }
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 MainActor.assumeIsolated {
@@ -866,8 +868,9 @@ final class Concealer27: ObservableObject {
         let updated = SectionLayout27.settingSection(section, for: bundleID, in: savedLayout)
         Defaults.set(updated.mapValues(\.rawValue), forKey: .macOS27Layout)
         update()
+        // The items have not moved on the bar, only between sections, so they need no new read.
         Task { [weak self] in
-            await self?.appState?.itemManager.cacheItemsRegardless()
+            self?.appState?.itemManager.resortCachedItems27()
         }
     }
 
