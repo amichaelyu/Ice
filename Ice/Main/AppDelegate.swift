@@ -70,6 +70,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // Put the user's own wallpaper back while Ice is not around to
+        // keep the notch hidden.
+        appState.notchHidingManager.restoreForTermination()
+    }
+
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
         return true
     }

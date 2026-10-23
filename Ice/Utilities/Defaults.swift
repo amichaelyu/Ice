@@ -166,6 +166,13 @@ extension Defaults {
         // MARK: Appearance Settings
         case menuBarAppearanceConfigurationV2 = "MenuBarAppearanceConfigurationV2"
 
+        // MARK: Notch Settings
+        case hideNotch = "HideNotch"
+        case notchMainDisplayOnly = "NotchMainDisplayOnly"
+        case notchRoundedCorners = "NotchRoundedCorners"
+        case notchOriginalWallpapers = "NotchOriginalWallpapers"
+        case notchGeneratedWallpapers = "NotchGeneratedWallpapers"
+
         // MARK: macOS 27
         case macOS27Layout = "MacOS27Layout"
         case macOS27LayoutSeeded = "MacOS27LayoutSeeded"

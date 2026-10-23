@@ -18,6 +18,10 @@ struct MenuBarAppearanceEditor: View {
 
     let location: Location
 
+    /// Additional sections shown below the appearance settings, in the
+    /// same scrolling form.
+    var additionalContent: AnyView?
+
     var body: some View {
         if #available(macOS 26.0, *) {
             bodyContent
@@ -46,9 +50,22 @@ struct MenuBarAppearanceEditor: View {
 
     @ViewBuilder
     private var cannotEdit: some View {
+        if let additionalContent {
+            IceForm {
+                cannotEditText
+                    .padding(.vertical, 20)
+                additionalContent
+            }
+        } else {
+            cannotEditText
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }
+    }
+
+    @ViewBuilder
+    private var cannotEditText: some View {
         Text("Ice cannot edit the appearance of automatically hidden menu bars.")
             .font(.title3)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     @ViewBuilder
@@ -75,6 +92,9 @@ struct MenuBarAppearanceEditor: View {
             IceSection("Menu Bar Shape") {
                 shapePicker
                 isInset
+            }
+            if let additionalContent {
+                additionalContent
             }
         }
     }
