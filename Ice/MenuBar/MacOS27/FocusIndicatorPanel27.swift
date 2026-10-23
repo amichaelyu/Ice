@@ -248,7 +248,7 @@ final class FocusIndicatorPanel27: NSPanel {
             defer { self?.endLift() }
             await appState.concealer27.suspendReleased(for: .milliseconds(900))
             for _ in 0..<14 {
-                _ = await MenuBarItemProvider27.items()
+                _ = await MenuBarItemProvider27.systemItems()
                 if let element = MenuBarItemProvider27.systemItem(withIdentifier: Self.focusItem) {
                     await Self.press(element)
                     // Hide the items again as soon as the menu is open, rather than letting the

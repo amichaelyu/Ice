@@ -111,6 +111,28 @@ enum MenuBarItemProvider27 {
         }
     }
 
+    /// Returns the items of the given processes, asking only them and MenuBarAgent.
+    ///
+    /// For a caller that wants one application's items: the other processes are left out of
+    /// the read, and their items in the provider's other answers stay as they were last read.
+    static func items(pids: Set<pid_t>) async -> [MenuBarItem] {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                let fresh = lock.withLock {
+                    ProcessInfo.processInfo.systemUptime - lastReadAt < freshInterval ? lastItems : nil
+                }
+                let items = fresh ?? readItems(pids: pids)
+                continuation.resume(returning: items.filter { pids.contains($0.ownerPID) })
+            }
+        }
+    }
+
+    /// Returns the system items, asking MenuBarAgent alone.
+    static func systemItems() async -> [MenuBarItem] {
+        let agents = NSRunningApplication.runningApplications(withBundleIdentifier: menuBarAgentBundleID)
+        return await items(pids: Set(agents.map(\.processIdentifier)))
+    }
+
     /// How long a finished read stands in for the next one.
     private static let freshInterval: TimeInterval = 0.12
     nonisolated(unsafe) private static var lastItems: [MenuBarItem]?

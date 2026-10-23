@@ -44,7 +44,7 @@ enum ItemClicker27 {
 
         let ownerPID = item.ownerPID
         let baseline = Set(windowOwners().map { $0.number })
-        let drawn = await MenuBarItemProvider27.items().first { $0.windowID == item.windowID && $0.isOnScreen }
+        let drawn = await MenuBarItemProvider27.items(pids: [ownerPID]).first { $0.windowID == item.windowID && $0.isOnScreen }
         if let drawn {
             postClick(at: CGPoint(x: drawn.bounds.midX, y: drawn.bounds.midY), mouseButton: mouseButton)
         } else if let element = MenuBarItemProvider27.element(forWindowID: item.windowID) {
