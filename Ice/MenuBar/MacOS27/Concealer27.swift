@@ -77,13 +77,9 @@ final class Concealer27: ObservableObject {
 
     /// The one read of the items after concealment changes (see ``scheduleRescan(after:)``).
     private var rescanTask: Task<Void, Never>?
-    private var suspendedUntil: ContinuousClock.Instant? {
-        didSet {
-            if isSuspended != (suspendedUntil != nil) {
-                isSuspended = suspendedUntil != nil
-            }
-        }
-    }
+
+    /// Ends a lift once its time is up; replaced, not added to, by each lift.
+    private var liftTimer: Task<Void, Never>?
 
     /// Whether concealment is lifted for a moment, so a click can reach a system item.
     ///
@@ -101,7 +97,9 @@ final class Concealer27: ObservableObject {
     /// Applications shown for a moment, with the number of callers showing each.
     private var temporarilyShown = [String: Int]() {
         didSet {
-            isShowingTemporarily = !temporarilyShown.isEmpty
+            if isShowingTemporarily == temporarilyShown.isEmpty {
+                isShowingTemporarily = !temporarilyShown.isEmpty
+            }
         }
     }
 
@@ -274,7 +272,7 @@ final class Concealer27: ObservableObject {
                     }
                     self.logger.notice("Hiding method changed to \(method.rawValue, privacy: .public)")
                     // A lift in progress belongs to assessment mode; the new method starts clean.
-                    self.suspendedUntil = nil
+                    self.endLift()
                     self.update(force: true)
                 }
             }
@@ -315,7 +313,7 @@ final class Concealer27: ObservableObject {
             return
         }
         self.backend = backend
-        if let suspendedUntil, ContinuousClock.now < suspendedUntil {
+        if isSuspended {
             return
         }
         let applications = NSWorkspace.shared.runningApplications
@@ -658,53 +656,34 @@ final class Concealer27: ObservableObject {
         }
     }
 
-    /// Releases every assertion for a moment, so a click can reach a system item.
-    ///
-    /// Does nothing with the native switch, where clicks reach system items anyway.
-    func suspend(for duration: Duration) {
-        guard needsClickLift else {
-            return
-        }
-        lastChangeAt = .now
-        suspendedUntil = .now + duration
-        isConcealing = false
-        concealedPIDs.removeAll()
-        lastApplied = nil
-        let previous = applyTask
-        applyTask = Task { [controller] in
-            await previous?.value
-            controller.releaseAll()
-        }
-        Task { [weak self] in
-            try? await Task.sleep(for: duration)
-            self?.suspendedUntil = nil
-            self?.update()
-        }
-    }
-
     /// Ends a suspension before its time, so the items are hidden again as soon as whatever
     /// needed them shown is done. The flash of revealed items is all the user sees of a lift, so
     /// the less of it there is, the better.
     func resumeConcealing() {
-        guard suspendedUntil != nil else {
+        guard isSuspended else {
             return
         }
-        suspendedUntil = nil
+        endLift()
         update()
     }
 
-    /// Releases every assertion and returns once that has actually happened.
+    /// Releases every assertion for a while, and returns once that has actually happened.
     ///
     /// Releasing goes through MenuBarAgent and queues behind whatever concealment change came
     /// before it. A click replayed on a timer could therefore arrive while the assertion was
     /// still live, and MenuBarAgent ignores those — which is why a click on the clock sometimes
     /// did nothing and worked on the second try.
+    ///
+    /// Does nothing with the native switch, where clicks reach system items anyway.
     func suspendReleased(for duration: Duration) async {
         guard needsClickLift else {
             return
         }
         lastChangeAt = .now
-        suspendedUntil = .now + duration
+        liftTimer?.cancel()
+        if !isSuspended {
+            isSuspended = true
+        }
         isConcealing = false
         concealedPIDs.removeAll()
         lastApplied = nil
@@ -715,20 +694,27 @@ final class Concealer27: ObservableObject {
         }
         applyTask = release
         await release.value
-        Task { [weak self] in
+        // The lift may have ended, or a later one begun, while the release was queued.
+        guard isSuspended else {
+            return
+        }
+        liftTimer?.cancel()
+        liftTimer = Task { [weak self] in
             try? await Task.sleep(for: duration)
-            self?.suspendedUntil = nil
-            self?.update()
+            guard !Task.isCancelled else {
+                return
+            }
+            self?.resumeConcealing()
         }
     }
 
-    /// Puts concealment back before the suspension would have run out.
-    func endSuspension() {
-        guard suspendedUntil != nil else {
-            return
+    /// Ends a lift without applying concealment again.
+    private func endLift() {
+        liftTimer?.cancel()
+        liftTimer = nil
+        if isSuspended {
+            isSuspended = false
         }
-        suspendedUntil = nil
-        update()
     }
 
     /// How much of the bar's movement is still to come after the last concealment change.
