@@ -136,7 +136,7 @@ final class Concealer27: ObservableObject {
         self.appState = appState
         nativeIsAvailable = NativeAllowListConcealer27.isAvailable
         if !nativeIsAvailable {
-            logger.notice("The native Allow in the Menu Bar switch cannot be read, so assessment mode is used")
+            logger.notice("The native Allow in the Menu Bar switch cannot be read (no Full Disk Access?), so assessment mode is used")
         }
         guard nativeIsAvailable || MenuBarAssessmentAssertion27.isAvailable else {
             logger.error("Neither the native switch nor MenuBarClientCore assertions are available, so items will not be hidden")
@@ -259,6 +259,25 @@ final class Concealer27: ObservableObject {
                     self.logger.notice("Hiding method changed to \(method.rawValue, privacy: .public)")
                     // A lift in progress belongs to assessment mode; the new method starts clean.
                     self.suspendedUntil = nil
+                    self.update()
+                }
+            }
+            .store(in: &cancellables)
+        // The switch's group container opens to Ice only with Full Disk Access, which can be
+        // granted while Ice runs, from the settings pane. A grant brings the native method in
+        // without a relaunch.
+        appState.permissions.fullDiskAccess.$hasPermission
+            .removeDuplicates()
+            .filter { $0 }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, !self.nativeIsAvailable || self.nativeFailed else {
+                        return
+                    }
+                    self.nativeIsAvailable = NativeAllowListConcealer27.isAvailable
+                    self.nativeFailed = false
+                    self.logger.notice("Full Disk Access granted; native switch available: \(self.nativeIsAvailable, privacy: .public)")
                     self.update()
                 }
             }

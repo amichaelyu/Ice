@@ -27,6 +27,13 @@ import OSLog
 /// in `MacOS27NativeDisallowed`, and turns back on only those. An application the user turned
 /// off themselves is never touched. The record outlives Ice: whatever is in it is turned back on
 /// at the next launch, so a crash does not leave applications hidden for good.
+///
+/// The group container is closed to every process but MenuBarAgent and ControlCenter, which
+/// hold `com.apple.private.security.restricted-application-groups` for it, unless the process has
+/// Full Disk Access. Without that, cfprefsd answers the read with nothing rather than an error,
+/// so ``isAvailable`` is false and the concealer uses assessment mode (measured on macOS 27.0.1,
+/// 2026-10-23: the same read returned 4035 bytes from a process with Full Disk Access and nil from
+/// one without, whose `ls` of the container failed with EPERM).
 @available(macOS 27.0, *)
 @MainActor
 final class NativeAllowListConcealer27 {
@@ -38,7 +45,7 @@ final class NativeAllowListConcealer27 {
         var description: String {
             switch self {
             case .unavailable: "The container-aware CoreFoundation preference calls are unavailable"
-            case .unreadable: "MenuBarAgent's trackedApplications preference is missing or unreadable"
+            case .unreadable: "MenuBarAgent's trackedApplications preference is missing or unreadable (Full Disk Access is needed to read it)"
             case .notSynchronized: "The trackedApplications preference could not be synchronized"
             }
         }

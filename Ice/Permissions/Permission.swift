@@ -167,16 +167,22 @@ final class ScreenRecordingPermission: Permission {
 
 // MARK: - FullDiskAccessPermission
 
-/// Full Disk Access, which the Focus indicator needs on macOS 27: the Focus state lives in
-/// `~/Library/DoNotDisturb`, which is behind it (see `FocusWatcher27`).
+/// Full Disk Access, which two things need on macOS 27: the native hiding method, since
+/// MenuBarAgent's `group.com.apple.controlcenter` container is behind it (see
+/// `NativeAllowListConcealer27`), and the Focus indicator, since the Focus state lives in
+/// `~/Library/DoNotDisturb` (see `FocusWatcher27`).
 ///
-/// Optional, and offered only in the Advanced settings pane, not on first launch. macOS has no
-/// prompt for it, so the request is just opening the list in System Settings.
+/// Optional: without it Ice hides items with assessment mode. Offered on first launch and in the
+/// Advanced settings pane. macOS has no prompt for it, so the request is just opening the list in
+/// System Settings.
 final class FullDiskAccessPermission: Permission {
     init() {
         super.init(
             title: "Full Disk Access",
-            details: ["Show which Focus is on while items are hidden."],
+            details: [
+                "Hide items with macOS's own Allow in the Menu Bar switch.",
+                "Show which Focus is on while items are hidden.",
+            ],
             isRequired: false,
             settingsURL: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"),
             check: {

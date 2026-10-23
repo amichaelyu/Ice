@@ -65,11 +65,14 @@ struct AdvancedSettingsPane: View {
         .annotation {
             switch settings.macOS27HidingMethod {
             case .nativeAllowList:
-                Text(
-                    "Uses macOS's own Allow in the Menu Bar switch for each hidden app. System items stay "
-                        + "native, including Focus and the camera indicator, and clicks on them need no reveal. "
-                        + "While hidden, those apps show as not allowed in System Settings > Control Center."
-                )
+                VStack(alignment: .leading) {
+                    Text(
+                        "Uses macOS's own Allow in the Menu Bar switch for each hidden app. System items stay "
+                            + "native, including Focus and the camera indicator, and clicks on them need no reveal. "
+                            + "While hidden, those apps show as not allowed in System Settings > Control Center."
+                    )
+                    FullDiskAccessNote(permission: appState.permissions.fullDiskAccess)
+                }
             case .assessmentMode:
                 Text(
                     "Uses assessment mode, which also removes Control Centre's modules and needs a brief "
@@ -208,7 +211,7 @@ struct AdvancedSettingsPane: View {
     @ViewBuilder
     private var allPermissions: some View {
         Group {
-            ForEach(appState.permissions.settingsPermissions) { permission in
+            ForEach(appState.permissions.listedPermissions) { permission in
                 PermissionRow(permission: permission)
             }
         }
@@ -219,6 +222,28 @@ struct AdvancedSettingsPane: View {
         }
         .onDisappear {
             appState.permissions.fullDiskAccess.stopCheck()
+        }
+    }
+}
+
+// MARK: - FullDiskAccessNote
+
+/// What the native hiding method is missing without Full Disk Access, and a way to grant it.
+///
+/// macOS keeps the switch in a group container that only Full Disk Access opens to Ice, and
+/// without it Ice falls back to assessment mode with no other sign, so the picker says so here.
+private struct FullDiskAccessNote: View {
+    @ObservedObject var permission: Permission
+
+    var body: some View {
+        if !permission.hasPermission {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Needs Full Disk Access, which macOS keeps the switch behind. Until it is granted, Ice uses assessment mode.")
+                    .foregroundStyle(.yellow)
+                Button("Grant Permission") {
+                    permission.performRequest()
+                }
+            }
         }
     }
 }
