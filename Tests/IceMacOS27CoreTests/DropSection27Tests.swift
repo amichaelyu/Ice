@@ -118,16 +118,11 @@ struct DropSection27Tests {
         #expect(result == .hidden)
     }
 
-    @Test("Hidden section not revealed: only a drop wholly left of every visible item hides")
+    @Test("Hidden section not revealed: a drop only reorders")
     func notRevealed() {
         let runs = DropSection27.Runs(visible: full.visible)
-        // Wholly left of the visible run.
-        #expect(DropSection27.section(dropped: item(at: 380), picked: item(at: 460), runs: runs, current: .visible, hiddenRevealed: false) == .hidden)
-        // Overlapping the leftmost visible item, so not clearly left of it.
-        #expect(DropSection27.section(dropped: item(at: 395), picked: item(at: 460), runs: runs, current: .visible, hiddenRevealed: false) == nil)
-        // Nothing visible to be left of.
-        #expect(DropSection27.section(dropped: item(at: 380), picked: item(at: 460), runs: .init(), current: .visible, hiddenRevealed: false) == nil)
-        // A hidden application dragged among the visible items still becomes visible only when revealed.
+        // The leftmost visible place, which used to read as hiding.
+        #expect(DropSection27.section(dropped: item(at: 380), picked: item(at: 460), runs: runs, current: .visible, hiddenRevealed: false) == nil)
         #expect(DropSection27.section(dropped: item(at: 450), picked: nil, runs: runs, current: .hidden, hiddenRevealed: false) == nil)
     }
 

@@ -75,8 +75,9 @@ enum DropSection27 {
     /// The section for a drop, guarded for how the drag went.
     ///
     /// An item put back where it was picked up says nothing. And when the hidden section was not
-    /// revealed during the drag there was no run to drop into: the only drop that still reads as
-    /// hiding is one wholly left of every visible item, which is where Ice's divider used to be.
+    /// revealed during the drag there was no run to drop into, so the drop only reorders: Ice's
+    /// dividers are invisible on 27, and the leftmost visible place looks just like the place left
+    /// of the hidden divider, so reading it as hiding made reordered items vanish.
     ///
     /// - Parameters:
     ///   - picked: The dragged item's frame when the drag began, if it was read.
@@ -94,10 +95,8 @@ enum DropSection27 {
         if let picked, abs(dropped.midX - picked.midX) < putBackTolerance {
             return nil
         }
-        if !hiddenRevealed {
-            guard let visible = span(runs.visible), dropped.maxX <= visible.minX else {
-                return nil
-            }
+        guard hiddenRevealed else {
+            return nil
         }
         return section(dropped: dropped, runs: runs, current: current)
     }
