@@ -3,8 +3,8 @@
 <plist version="1.0">
 <dict>
 	<key>SUFeedURL</key>
-	<string>https://jordanbaird.github.io/ice-releases/appcast.xml</string>
+	<string>https://github.com/amichaelyu/Ice/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>3nfIGMOD8DALPE8vIdFo2tUOIVc2MVbzhc+2J9JLn+Q=</string>
+	<string>PQgny+45ZdUdkRB/f5GcITsacPm8QL3B+HGji5gqsUE=</string>
 </dict>
 </plist>
