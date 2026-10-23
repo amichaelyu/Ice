@@ -48,6 +48,17 @@ final class Concealer27: ObservableObject {
     /// Applications meant to be concealed that MenuBarAgent did not track at the last native
     /// apply, so there was no switch to turn off yet (see ``reapplyWhileLaunching(bundleID:)``).
     private var untrackedConcealed = Set<String>()
+
+    /// Keeps writes of the native switch at least 700 ms apart (see `WritePacer27`).
+    ///
+    /// Measured on macOS 27.0.1, 2026-10-23: a lone write settles in about 250 ms, while writes
+    /// 390–430 ms apart, from revealing and rehiding the hidden section on hover, had MenuBarAgent
+    /// black the whole bar out for half a second. Only the write waits: what is concealed, and so
+    /// hover, clicks and the Ice Bar, follows each request at once.
+    private var nativePacer = WritePacer27<Set<String>>(minimumSpacing: 0.7)
+
+    /// The one task that makes the trailing write once the spacing has passed.
+    private var nativeTrailingWrite: Task<Void, Never>?
     private let logger = Logger(category: "Concealer27")
     private weak var appState: AppState?
     private var observers = [NSObjectProtocol]()
@@ -303,23 +314,9 @@ final class Concealer27: ObservableObject {
                 if controller.isActive {
                     controller.releaseAll()
                 }
-                do {
-                    let untracked = try native.apply(concealed: concealed)
-                    self?.untrackedConcealed = untracked
-                } catch {
-                    logger.error("Could not apply concealment through the native switch: \(error, privacy: .public)")
-                    // A switch that cannot be found or read now will not be in a moment either, so
-                    // assessment mode takes over for the rest of the run. A write that did not
-                    // synchronize is tried again at the next change.
-                    switch error as? NativeAllowListConcealer27.Failure {
-                    case .unavailable, .unreadable:
-                        self?.nativeFailed = true
-                        self?.update()
-                    default:
-                        break
-                    }
-                }
+                self?.requestNativeApply(concealed: concealed)
             case .assessment:
+                self?.cancelNativePacing()
                 native.releaseAll()
                 do {
                     try await controller.apply(target: target, running: running)
@@ -338,6 +335,67 @@ final class Concealer27: ObservableObject {
             await self?.appState?.itemManager.cacheItemsIfNeeded()
             await self?.checkStuckOverflow()
         }
+    }
+
+    /// Applies a concealed set through the native switch, now or once the spacing allows.
+    private func requestNativeApply(concealed: Set<String>) {
+        let now = ProcessInfo.processInfo.systemUptime
+        switch nativePacer.request(concealed, at: now) {
+        case .writeNow:
+            applyNative(concealed: concealed, at: now)
+        case .dropped:
+            logger.debug("Native write dropped: the bar already shows what was asked")
+        case .deferred(let until):
+            logger.debug("Native write held for \((until - now) * 1000, privacy: .public) ms")
+            guard nativeTrailingWrite == nil else {
+                return
+            }
+            nativeTrailingWrite = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(max(until - now, 0)))
+                guard let self, !Task.isCancelled else {
+                    return
+                }
+                nativeTrailingWrite = nil
+                let now = ProcessInfo.processInfo.systemUptime
+                guard backend == .native, let due = nativePacer.takeDue(at: now) else {
+                    return
+                }
+                applyNative(concealed: due, at: now)
+                // The bar moves now rather than when the request came, so heavy work waits for
+                // this movement too, and the cached frames are read again once it has settled.
+                lastChangeAt = .now
+                try? await Task.sleep(for: Self.settleAfterChange)
+                await appState?.itemManager.cacheItemsIfNeeded()
+            }
+        }
+    }
+
+    /// Writes a concealed set through the native switch and notes it with the pacer.
+    private func applyNative(concealed: Set<String>, at now: Double) {
+        do {
+            let result = try native.apply(concealed: concealed)
+            untrackedConcealed = result.untracked
+            nativePacer.didApply(concealed, wrote: result.wrote, at: now)
+        } catch {
+            logger.error("Could not apply concealment through the native switch: \(error, privacy: .public)")
+            // A switch that cannot be found or read now will not be in a moment either, so
+            // assessment mode takes over for the rest of the run. A write that did not
+            // synchronize is tried again at the next change.
+            switch error as? NativeAllowListConcealer27.Failure {
+            case .unavailable, .unreadable:
+                nativeFailed = true
+                update()
+            default:
+                break
+            }
+        }
+    }
+
+    /// Forgets any held native write, as assessment mode takes over and hands the switch back.
+    private func cancelNativePacing() {
+        nativeTrailingWrite?.cancel()
+        nativeTrailingWrite = nil
+        nativePacer.reset()
     }
 
     /// Applies the native switch again while a hidden application launches.
