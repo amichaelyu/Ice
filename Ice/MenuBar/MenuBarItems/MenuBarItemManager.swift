@@ -52,9 +52,27 @@ final class MenuBarItemManager: ObservableObject {
     private func configureCancellables(with appState: AppState) {
         var c = Set<AnyCancellable>()
 
+        // On macOS 27 a change MenuBarAgent reports sets off a read, and the timer is a fallback.
+        let refreshInterval: TimeInterval
+        let barChanges: AnyPublisher<Void, Never>
+        if #available(macOS 27.0, *) {
+            refreshInterval = 30
+            barChanges = MenuBarItemProvider27.menuBarAgentChanges
+            MenuBarItemProvider27.observeMenuBarAgent()
+            NSWorkspace.shared.publisher(for: \.runningApplications)
+                .sink { _ in
+                    MenuBarItemProvider27.observeMenuBarAgent()
+                }
+                .store(in: &c)
+        } else {
+            refreshInterval = 5
+            barChanges = Empty().eraseToAnyPublisher()
+        }
+
         NSWorkspace.shared.publisher(for: \.runningApplications)
             .delay(for: 0.25, scheduler: DispatchQueue.main)
-            .discardMerge(Timer.publish(every: 5, on: .main, in: .default).autoconnect())
+            .discardMerge(Timer.publish(every: refreshInterval, on: .main, in: .default).autoconnect())
+            .merge(with: barChanges.receive(on: DispatchQueue.main))
             .debounce(for: 1, scheduler: DispatchQueue.main)
             .sink { [weak self] in
                 guard let self else {

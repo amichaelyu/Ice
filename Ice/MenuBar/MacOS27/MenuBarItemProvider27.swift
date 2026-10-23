@@ -5,6 +5,7 @@
 
 import ApplicationServices
 import Cocoa
+import Combine
 import OSLog
 
 /// Reads menu bar items through Accessibility on macOS 27.
@@ -225,6 +226,48 @@ enum MenuBarItemProvider27 {
     /// last read. Items drawn on another display are included (see `ItemDrawing27`).
     static func element(forWindowID windowID: CGWindowID) -> AXUIElement? {
         lock.withLock { entries[windowID]?.element }
+    }
+
+    // MARK: Observing
+
+    private static let agentChanges = PassthroughSubject<Void, Never>()
+    @MainActor private static var agentObserver: (pid: pid_t, observer: AXObserver)?
+
+    /// Posts when MenuBarAgent creates, destroys, moves or resizes one of its elements. It
+    /// draws every item, so this is any change to the bar.
+    static var menuBarAgentChanges: AnyPublisher<Void, Never> {
+        agentChanges.eraseToAnyPublisher()
+    }
+
+    /// Watches MenuBarAgent for `menuBarAgentChanges`, starting over if it was relaunched.
+    @MainActor
+    static func observeMenuBarAgent() {
+        let pid = NSRunningApplication.runningApplications(withBundleIdentifier: menuBarAgentBundleID).first?.processIdentifier
+        guard agentObserver?.pid != pid else {
+            return
+        }
+        if let agentObserver {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(agentObserver.observer), .defaultMode)
+            self.agentObserver = nil
+        }
+        guard let pid else {
+            return
+        }
+        var observer: AXObserver?
+        guard AXObserverCreate(pid, { _, _, _, _ in MenuBarItemProvider27.agentChanges.send() }, &observer) == .success, let observer else {
+            return
+        }
+        let application = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(application, AccessibilityScanSchedule27.normalTimeout)
+        let notifications = [kAXCreatedNotification, kAXUIElementDestroyedNotification, kAXMovedNotification, kAXResizedNotification]
+        let results = notifications.map { AXObserverAddNotification(observer, application, $0 as CFString, nil) }
+        logger.debug("Observing MenuBarAgent: \(results.map(\.rawValue), privacy: .public)")
+        // Without Accessibility access nothing registers, so it is tried again next time.
+        guard results.contains(where: { $0 == .success || $0 == .notificationAlreadyRegistered }) else {
+            return
+        }
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        agentObserver = (pid, observer)
     }
 
     // MARK: Reading
