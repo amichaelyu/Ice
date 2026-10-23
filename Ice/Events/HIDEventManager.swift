@@ -41,7 +41,8 @@ final class HIDEventManager: ObservableObject {
     /// (see `beginMenuBarItemDrag27`).
     private var menuBarItemDragPick27: Task<PickedMenuBarItem27?, Never>?
 
-
+    /// Whether ``systemItemClickTap`` is running (see `updateSystemItemClickTap`).
+    private var isSystemItemClickTapRunning = false
 
     /// A Boolean value that indicates whether the manager is enabled.
     private var isEnabled = false {
@@ -54,6 +55,9 @@ final class HIDEventManager: ObservableObject {
                 for monitor in allMonitors {
                     monitor.stop()
                 }
+            }
+            if #available(macOS 27.0, *) {
+                updateSystemItemClickTap()
             }
         }
     }
@@ -133,7 +137,8 @@ final class HIDEventManager: ObservableObject {
     ///
     /// While an assessment-mode assertion is live, MenuBarAgent ignores clicks on the
     /// clock (measured on macOS 27.0). The tap holds such a click back, releases the
-    /// assertions for a moment, and replays the click.
+    /// assertions for a moment, and replays the click. It runs only while that is so
+    /// (see `updateSystemItemClickTap`).
     private(set) lazy var systemItemClickTap = EventTap(
         types: [.leftMouseDown, .leftMouseUp],
         location: .hidEventTap,
@@ -151,20 +156,14 @@ final class HIDEventManager: ObservableObject {
 
     // MARK: All Monitors
 
-    /// All monitors maintained by the manager.
-    private lazy var allMonitors: [any EventMonitorProtocol] = {
-        var monitors: [any EventMonitorProtocol] = [
-            mouseDownMonitor,
-            mouseUpMonitor,
-            mouseDraggedMonitor,
-            mouseMovedTap,
-            scrollWheelMonitor,
-        ]
-        if #available(macOS 27.0, *) {
-            monitors.append(systemItemClickTap)
-        }
-        return monitors
-    }()
+    /// The monitors that run whenever the manager is enabled.
+    private lazy var allMonitors: [any EventMonitorProtocol] = [
+        mouseDownMonitor,
+        mouseUpMonitor,
+        mouseDraggedMonitor,
+        mouseMovedTap,
+        scrollWheelMonitor,
+    ]
 
     // MARK: Setup
 
@@ -200,7 +199,52 @@ final class HIDEventManager: ObservableObject {
             .store(in: &c)
         }
 
+        if #available(macOS 27.0, *), let concealer = appState?.concealer27 {
+            // The backend is set by the same `update` that publishes `isConcealing`.
+            concealer.$isConcealing
+                .combineLatest(concealer.$isSuspended)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.updateSystemItemClickTap()
+                    }
+                }
+                .store(in: &c)
+        }
+
         cancellables = c
+    }
+
+    /// Runs ``systemItemClickTap`` only while assessment mode conceals something.
+    ///
+    /// The tap is an active filter at the head of the HID stream, so while it runs every click
+    /// on the system waits on Ice's main thread. With the native switch it has nothing to do.
+    @available(macOS 27.0, *)
+    private func updateSystemItemClickTap() {
+        guard let appState else {
+            return
+        }
+        let concealer = appState.concealer27
+        // A lift lasts while the replayed click goes through, so it keeps the tap.
+        var isNeeded = concealer.needsClickLift && (concealer.isConcealing || concealer.isSuspended)
+        if !isNeeded, let until = heldBackReleaseUntil, ContinuousClock.now < until {
+            // The release of a click already held back must still be swallowed.
+            isNeeded = true
+            Task { [weak self] in
+                try? await Task.sleep(until: until, clock: .continuous)
+                self?.updateSystemItemClickTap()
+            }
+        }
+        let shouldRun = isEnabled && isNeeded
+        guard shouldRun != isSystemItemClickTapRunning else {
+            return
+        }
+        isSystemItemClickTapRunning = shouldRun
+        if shouldRun {
+            systemItemClickTap.start()
+        } else {
+            systemItemClickTap.stop()
+        }
     }
 
     // MARK: Start/Stop

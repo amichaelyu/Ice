@@ -113,7 +113,7 @@ final class Concealer27: ObservableObject {
     private var runningApplicationsObservation: NSKeyValueObservation?
 
     /// Whether any application is meant to be concealed right now.
-    private(set) var isConcealing = false
+    @Published private(set) var isConcealing = false
 
     /// Process identifiers of the applications meant to be concealed right now.
     private(set) var concealedPIDs = Set<pid_t>()
