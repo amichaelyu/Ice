@@ -49,6 +49,9 @@ final class AdvancedSettings: ObservableObject {
     /// Off by default: the Focus state can only be read with Full Disk Access.
     @Published var showFocusIndicator = false
 
+    /// How Ice hides applications' items on macOS 27.
+    @Published var macOS27HidingMethod: MacOS27HidingMethod = .nativeAllowList
+
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
@@ -72,6 +75,12 @@ final class AdvancedSettings: ObservableObject {
         Defaults.ifPresent(key: .showCaptureIndicator, assign: &showCaptureIndicator)
         Defaults.ifPresent(key: .showFocusIndicator, assign: &showFocusIndicator)
         Defaults.ifPresent(key: .tempShowInterval, assign: &tempShowInterval)
+
+        Defaults.ifPresent(key: .macOS27HidingMethod) { (rawValue: String) in
+            if let method = MacOS27HidingMethod(rawValue: rawValue) {
+                macOS27HidingMethod = method
+            }
+        }
 
         Defaults.ifPresent(key: .sectionDividerStyle) { rawValue in
             if let style = SectionDividerStyle(rawValue: rawValue) {
@@ -140,6 +149,13 @@ final class AdvancedSettings: ObservableObject {
             }
             .store(in: &c)
 
+        $macOS27HidingMethod
+            .receive(on: DispatchQueue.main)
+            .sink { method in
+                Defaults.set(method.rawValue, forKey: .macOS27HidingMethod)
+            }
+            .store(in: &c)
+
         $tempShowInterval
             .receive(on: DispatchQueue.main)
             .sink { interval in
@@ -164,6 +180,29 @@ enum SectionDividerStyle: Int, CaseIterable, Identifiable {
         switch self {
         case .noDivider: "None"
         case .chevron: "Chevron"
+        }
+    }
+}
+
+// MARK: - MacOS27HidingMethod
+
+/// How Ice hides applications' items on macOS 27.
+enum MacOS27HidingMethod: String, CaseIterable, Identifiable {
+    /// macOS's own "Allow in the Menu Bar" switch for each hidden application
+    /// (see `NativeAllowListConcealer27`).
+    case nativeAllowList
+
+    /// MenuBarAgent's assessment mode (see `MenuBarAssessmentAssertion27`), which also removes
+    /// Control Centre's modules and ignores clicks on system items while it is in force.
+    case assessmentMode
+
+    var id: String { rawValue }
+
+    /// Localized string key representation.
+    var localized: LocalizedStringKey {
+        switch self {
+        case .nativeAllowList: "Allow in the Menu Bar"
+        case .assessmentMode: "Assessment mode"
         }
     }
 }

@@ -6,10 +6,13 @@
 > [!IMPORTANT]
 > This is a fork of [jordanbaird/Ice](https://github.com/jordanbaird/Ice) that restores hiding, the Ice Bar and the Menu Bar Layout editor on macOS 27. It is built from the upstream pull request [jordanbaird/Ice#995](https://github.com/jordanbaird/Ice/pull/995) by [RabenkoYevhenii](https://github.com/RabenkoYevhenii), which adapts the assessment-mode approach from [Thaw](https://github.com/thaw-app/Thaw) and [Barometer](https://github.com/mackid1993/Barometer). All of them are GPLv3. Releases here are Developer ID signed and notarized; see [Install](#install) below.
 >
+> On macOS 27, Ice hides apps by default with macOS's own "Allow in the Menu Bar" switch for each app (System Settings > Control Center). System items stay native, the Focus item and the camera indicator included, and clicks on them need no reveal. Assessment mode is still available under Settings > Advanced > Hiding method, for systems where the native switch does not work.
+>
 > Known limitations on macOS 27:
 >
 > - Items cannot be reordered on the bar. macOS 27 arranges them itself; sections come from the per-application layout in Ice's settings.
-> - Opening a system item's panel, such as the clock or Wi-Fi, while items are hidden takes about 150 ms longer.
+> - While an app is hidden, it shows as not allowed in System Settings > Control Center. Ice turns it back on when it is shown again and when Ice quits, and at the next launch if Ice did not quit cleanly.
+> - With assessment mode, Control Centre's modules are not drawn while items are hidden, and opening a system item's panel, such as the clock or Wi-Fi, takes about 150 ms longer.
 
 Ice is a powerful menu bar management tool. While its primary function is hiding and showing menu bar items, it aims to cover a wide variety of additional features to make it one of the most versatile menu bar tools available.
 
