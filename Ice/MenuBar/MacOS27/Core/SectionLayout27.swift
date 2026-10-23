@@ -31,18 +31,11 @@ enum SectionLayout27 {
         }
     }
 
-    /// The layout to act on for the running applications.
-    ///
-    /// What was observed now wins, the saved layout covers applications whose
-    /// items could not be read, and an application seen for the first time is
-    /// visible.
-    static func effectiveLayout(
-        observed: [String: MacOS27Section],
-        saved: [String: MacOS27Section],
-        running: Set<String>
-    ) -> [String: MacOS27Section] {
+    /// The saved layout limited to the running applications, where an application the
+    /// layout has not seen is visible.
+    static func effectiveLayout(saved: [String: MacOS27Section], running: Set<String>) -> [String: MacOS27Section] {
         running.reduce(into: [:]) { result, bundleID in
-            result[bundleID] = observed[bundleID] ?? saved[bundleID] ?? .visible
+            result[bundleID] = saved[bundleID] ?? .visible
         }
     }
 

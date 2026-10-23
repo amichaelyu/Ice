@@ -300,7 +300,10 @@ final class Concealer27: ObservableObject {
         }
         let applications = NSWorkspace.shared.runningApplications
         let running = Set(applications.compactMap(\.bundleIdentifier))
-        let layout = SectionLayout27.effectiveLayout(observed: [:], saved: savedLayout, running: running)
+        // The native switch outlives the process, so an application stays off while it is not
+        // running and is not drawn when it starts again. An assertion's allow list names running
+        // applications only.
+        let layout = backend == .native ? savedLayout : SectionLayout27.effectiveLayout(saved: savedLayout, running: running)
         let target = ConcealmentPlanner27.concealedSets(
             layout: layout,
             state: heldRevealState.map { Self.moreRevealed($0, revealState(appState)) } ?? revealState(appState),
@@ -420,10 +423,10 @@ final class Concealer27: ObservableObject {
     /// Applies the native switch again while a hidden application launches.
     ///
     /// MenuBarAgent consults the switch when an item is created, so an application that is
-    /// already tracked needs nothing here: it is simply not drawn. One it has never seen has no
-    /// switch until its first item exists, and is turned off once it does.
+    /// already tracked was turned off while it was not running and needs nothing here. One it
+    /// has never seen has no switch until its first item exists, and is turned off once it does.
     private func reapplyWhileLaunching(bundleID: String) {
-        guard let section = savedLayout[bundleID], section != .visible else {
+        guard untrackedConcealed.contains(bundleID) else {
             return
         }
         Task { [weak self] in

@@ -14,20 +14,9 @@ struct SectionLayout27Tests {
         #expect(result == ["eu.exelban.Stats": .visible, "ru.keepcoder.Telegram": .alwaysHidden])
     }
 
-    @Test("Observed sections win over the saved layout")
-    func observedWins() {
+    @Test("The saved layout places running apps")
+    func savedPlacesRunningApps() {
         let result = SectionLayout27.effectiveLayout(
-            observed: ["com.caldis.Mos": .visible],
-            saved: ["com.caldis.Mos": .alwaysHidden],
-            running: ["com.caldis.Mos"]
-        )
-        #expect(result == ["com.caldis.Mos": .visible])
-    }
-
-    @Test("The saved layout covers apps that could not be read")
-    func savedCoversUnreadApps() {
-        let result = SectionLayout27.effectiveLayout(
-            observed: [:],
             saved: ["com.ethanbills.DockDoor": .hidden],
             running: ["com.ethanbills.DockDoor"]
         )
@@ -36,13 +25,13 @@ struct SectionLayout27Tests {
 
     @Test("Apps seen for the first time are visible")
     func newAppsAreVisible() {
-        let result = SectionLayout27.effectiveLayout(observed: [:], saved: [:], running: ["com.example.New"])
+        let result = SectionLayout27.effectiveLayout(saved: [:], running: ["com.example.New"])
         #expect(result == ["com.example.New": .visible])
     }
 
     @Test("Only running apps are part of the layout")
     func onlyRunningApps() {
-        let result = SectionLayout27.effectiveLayout(observed: [:], saved: ["com.example.Quit": .hidden], running: [])
+        let result = SectionLayout27.effectiveLayout(saved: ["com.example.Quit": .hidden], running: [])
         #expect(result.isEmpty)
     }
 
