@@ -66,7 +66,15 @@ final class LayoutBarContainer: NSView {
         self.section = section
         super.init(frame: .zero)
         self.translatesAutoresizingMaskIntoConstraints = false
-        unregisterDraggedTypes()
+        if #available(macOS 27.0, *) {
+            // The items are laid out in this view, not in the padding view around it, and they
+            // take no drags themselves. On macOS 27 a drop is the whole edit — there is no move on
+            // the bar to finish it later — so a drop between two items has to land somewhere:
+            // with nothing here to take it, it was refused and the item stayed where it was.
+            registerForDraggedTypes([.layoutBarItem])
+        } else {
+            unregisterDraggedTypes()
+        }
         configureCancellables()
     }
 
@@ -289,5 +297,69 @@ final class LayoutBarContainer: NSView {
             let distance2 = abs(view2.frame.midX - xPosition)
             return distance1 < distance2
         }
+    }
+
+    /// Moves the application of a dropped item to this container's section, on macOS 27.
+    ///
+    /// The saved layout decides sections and macOS orders the items within one, so a drop only
+    /// moves the item's application, with every item it has, to this section; a drop on Visible
+    /// takes the application out of the layout. Both this container and the padding view around
+    /// it come here, and AppKit hands a drop to one of them, so each drop is applied once.
+    @available(macOS 27.0, *)
+    func applyDrop(of draggingSource: LayoutBarItemView) {
+        guard
+            let appState,
+            !draggingSource.item.isControlItem,
+            let bundleID = draggingSource.item.sourceApplication?.bundleIdentifier
+        else {
+            return
+        }
+        let section = MacOS27Section(self.section)
+        // Not now: the drop arrives while SwiftUI is updating the layout window, and
+        // `setSection` publishes the concealer's state and, through the item cache it
+        // refreshes, the window's own. Done in place, every drop raised "Publishing
+        // changes from within view updates is not allowed". The cache `setSection`
+        // refreshes is read in a task of its own, so it still lands after the drop has let
+        // the container arrange its views again.
+        DispatchQueue.main.async {
+            appState.concealer27.setSection(section, for: bundleID)
+        }
+    }
+}
+
+// MARK: LayoutBarContainer: NSDraggingDestination
+
+/// Registered for drags on macOS 27 only (see `init`); earlier versions leave them to the
+/// padding view.
+extension LayoutBarContainer {
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        updateArrangedViewsForDrag(with: sender, phase: .entered)
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        if let sender {
+            updateArrangedViewsForDrag(with: sender, phase: .exited)
+        }
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        updateArrangedViewsForDrag(with: sender, phase: .updated)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        updateArrangedViewsForDrag(with: sender, phase: .ended)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        defer {
+            DispatchQueue.main.async {
+                self.canSetArrangedViews = true
+            }
+        }
+        guard #available(macOS 27.0, *), let draggingSource = sender.draggingSource as? LayoutBarItemView else {
+            return false
+        }
+        applyDrop(of: draggingSource)
+        return true
     }
 }

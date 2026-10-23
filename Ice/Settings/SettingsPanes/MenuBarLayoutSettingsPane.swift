@@ -37,7 +37,7 @@ struct MenuBarLayoutSettingsPane: View {
                     .font(.title3.bold())
                 Group {
                     if #available(macOS 27.0, *) {
-                        Text("macOS orders the items within each section.")
+                        Text("Sections hold whole applications: moving an item moves all of its application's items. macOS orders the items within each section.")
                     } else {
                         Text("Items can also be arranged by ⌘ Command + dragging them in the menu bar.")
                     }
