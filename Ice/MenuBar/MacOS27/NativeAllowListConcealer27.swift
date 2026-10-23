@@ -57,9 +57,10 @@ final class NativeAllowListConcealer27 {
     /// An application that is already off and that Ice did not turn off is the user's choice,
     /// and is left alone and not recorded. One that is not tracked yet — it has never created an
     /// item — cannot be turned off until MenuBarAgent adds it, so the caller applies again once
-    /// it has had the chance; those are returned.
+    /// it has had the chance; those are returned, with whether the preference was written at all
+    /// (the caller spaces writes out, see `WritePacer27`).
     @discardableResult
-    func apply(concealed: Set<String>) throws -> Set<String> {
+    func apply(concealed: Set<String>) throws -> (untracked: Set<String>, wrote: Bool) {
         var array = try Preferences.read()
         let states = TrackedApplications27.allowedStates(in: array)
         let recorded = Self.recorded
@@ -71,7 +72,8 @@ final class NativeAllowListConcealer27 {
         let disallowed = TrackedApplications27.settingAllowed(false, for: toDisallow, in: array)
         let allowed = TrackedApplications27.settingAllowed(true, for: toAllow, in: disallowed.array)
         array = allowed.array
-        if !disallowed.changed.isEmpty || !allowed.changed.isEmpty {
+        let wrote = !disallowed.changed.isEmpty || !allowed.changed.isEmpty
+        if wrote {
             try Preferences.write(array)
             if !disallowed.changed.isEmpty {
                 logger.notice("Disallowed in the menu bar: \(disallowed.changed.sorted().joined(separator: " "), privacy: .public)")
@@ -85,7 +87,7 @@ final class NativeAllowListConcealer27 {
         // hidden; one MenuBarAgent forgot is no longer Ice's to restore.
         let final = TrackedApplications27.allowedStates(in: array)
         Self.recorded = Self.recorded.intersection(concealed).filter { final[$0] == false }
-        return concealed.filter { states[$0] == nil }
+        return (concealed.filter { states[$0] == nil }, wrote)
     }
 
     /// Turns back on every application Ice turned off, in this run or an earlier one.
