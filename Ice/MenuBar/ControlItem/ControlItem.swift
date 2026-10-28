@@ -64,6 +64,8 @@ final class ControlItem {
     private final class StatusItemStorage {
         let statusItem: NSStatusItem
         let constraint: NSLayoutConstraint?
+        /// The constraint's original constant: the padding around the item's button.
+        let constraintConstant: CGFloat
 
         /// Creates a new storage instance.
         @MainActor
@@ -88,8 +90,10 @@ final class ControlItem {
                 {
                     assert(constraints.filter(Predicates.controlItemConstraint(button: button)).count == 1)
                     self.constraint = constraint
+                    self.constraintConstant = constraint.constant
                 } else {
                     self.constraint = nil
+                    self.constraintConstant = 0
                 }
 
                 // On macOS 27, Ice finds its own items through Accessibility by this identifier.
@@ -99,6 +103,7 @@ final class ControlItem {
                 button.sendAction(on: [.leftMouseDown, .rightMouseUp])
             } else {
                 self.constraint = nil
+                self.constraintConstant = 0
             }
         }
 
@@ -429,6 +434,7 @@ final class ControlItem {
 
         if isVisible {
             constraint?.isActive = true
+            constraint?.constant = storage.constraintConstant
             statusItem.length = identifier.length(for: state)
         } else {
             let showOnDrag = appState.settings.advanced.showAllSectionsOnUserDrag
@@ -436,7 +442,15 @@ final class ControlItem {
 
             let shouldShow = showOnDrag && isDragging
 
-            constraint?.isActive = false
+            if #available(macOS 27.0, *) {
+                // On macOS 27 an external display's bar keeps the 16 points of padding this
+                // constraint puts around the empty button, whether the constraint is inactive or
+                // the length is 0, so each divider reads as a gap there (measured on macOS 27.0).
+                // Zeroing the padding collapses the item on every display.
+                constraint?.constant = 0
+            } else {
+                constraint?.isActive = false
+            }
             statusItem.length = shouldShow ? 3 : 0
 
             if let window {
