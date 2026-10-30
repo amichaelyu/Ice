@@ -37,6 +37,9 @@ enum DropSection27 {
     /// A run with nothing drawn gives way to its neighbour's edge: with no hidden items on the
     /// bar, left of the visible run is hidden. With no always-hidden items there is no edge to
     /// cross, so nothing becomes always hidden; that section is reached through the layout editor.
+    /// For the same reason an always-hidden application that comes to rest left of every other
+    /// item stays always hidden: its neighbours are concealed or folded behind the overflow
+    /// button, and reading the drop as hidden undid the layout editor's move a moment later.
     ///
     /// - Parameters:
     ///   - dropped: The dragged item's frame once the bar settled, or `nil` if it was not found.
@@ -50,6 +53,9 @@ enum DropSection27 {
         let alwaysHidden = span(runs.alwaysHidden)
         let hidden = span(runs.hidden)
         let visible = span(runs.visible)
+        if current == .alwaysHidden, alwaysHidden == nil, let leftmost = hidden ?? visible, x < leftmost.minX {
+            return nil
+        }
         let result: MacOS27Section
         if let alwaysHidden, x <= alwaysHidden.maxX {
             result = .alwaysHidden
@@ -99,6 +105,16 @@ enum DropSection27 {
             return nil
         }
         return section(dropped: dropped, runs: runs, current: current)
+    }
+
+    /// The frame to judge an item by: an item folded behind the overflow button reports a frame
+    /// stacked against the button (see `OverflowDetection27`), and stands for the leftmost place
+    /// on the bar, where the button is. Any other frame is its own.
+    static func judgedFrame(_ frame: CGRect, overflowButton: CGRect?) -> CGRect {
+        guard let overflowButton, OverflowDetection27.isInOverflow(itemFrame: frame, chevronFrame: overflowButton) else {
+            return frame
+        }
+        return overflowButton
     }
 
     /// The frame in a list nearest the given point along the bar, for an application with several items.

@@ -626,10 +626,15 @@ extension HIDEventManager {
             // The item lands once MenuBarAgent has finished moving the bar, after any reveal.
             try? await Task.sleep(for: (concealer.timeUntilSettled() ?? .zero) + .milliseconds(150))
             let displayBounds = Self.displayBounds27(containing: dropPoint)
+            let fresh = await MenuBarItemProvider27.items()
+            // On a notched bar the items that do not fit are folded behind the overflow button,
+            // the hidden ones among the first once they are revealed. They still mark where their
+            // section runs, and the dragged item may be one of them.
             let items = Self.applicationItems27(
-                await MenuBarItemProvider27.items(),
+                fresh,
                 concealedPIDs: concealer.concealedPIDs,
-                displayBounds: displayBounds
+                displayBounds: displayBounds,
+                overflowButton: Self.overflowButton27(containing: dropPoint)
             )
             let layout = concealer.savedLayout
             var runs = DropSection27.Runs()
@@ -677,20 +682,37 @@ extension HIDEventManager {
             .first { $0.contains(point) }
     }
 
+    /// The overflow button of the bar on the display holding the given point, if it lists one
+    /// with geometry.
+    @available(macOS 27.0, *)
+    private static func overflowButton27(containing point: CGPoint) -> CGRect? {
+        let screen = NSScreen.screens.first { CGDisplayBounds($0.displayID).contains(point) }
+        let frame = screen.flatMap { MenuBarItemProvider27.overflowButtonFrame(for: $0.displayID) }
+            ?? MenuBarItemProvider27.overflowButtonFrame()
+        guard let frame, !frame.isEmpty, screen.map({ CGDisplayBounds($0.displayID).intersects(frame) }) ?? true else {
+            return nil
+        }
+        return frame
+    }
+
     /// The drawn items that belong to an application with a section, with its bundle identifier.
     ///
     /// Ice's own control items and MenuBarAgent's system items are left out, as are items of
     /// concealed applications, whose frames Accessibility keeps where they were last drawn.
+    /// Given the bar's overflow button, items folded behind it are kept too, at the button's
+    /// frame (see `DropSection27.judgedFrame(_:overflowButton:)`).
     @available(macOS 27.0, *)
     private static func applicationItems27(
         _ items: [MenuBarItem],
         concealedPIDs: Set<pid_t>,
-        displayBounds: CGRect?
+        displayBounds: CGRect?,
+        overflowButton: CGRect? = nil
     ) -> [(bundleID: String, frame: CGRect)] {
         let ownPID = ProcessInfo.processInfo.processIdentifier
         return items.compactMap { item in
+            let frame = DropSection27.judgedFrame(item.bounds, overflowButton: overflowButton)
             guard
-                item.isOnScreen,
+                item.isOnScreen || frame != item.bounds,
                 item.ownerPID != ownPID,
                 !item.isControlItem,
                 !concealedPIDs.contains(item.ownerPID),
@@ -701,7 +723,7 @@ extension HIDEventManager {
             else {
                 return nil
             }
-            return (bundleID, item.bounds)
+            return (bundleID, frame)
         }
     }
 

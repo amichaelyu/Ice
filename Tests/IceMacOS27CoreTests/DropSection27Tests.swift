@@ -126,6 +126,31 @@ struct DropSection27Tests {
         #expect(DropSection27.section(dropped: item(at: 450), picked: nil, runs: runs, current: .hidden, hiddenRevealed: false) == nil)
     }
 
+    @Test("No always-hidden items drawn: an always-hidden application left of the rest stays")
+    func alwaysHiddenStaysWithoutRun() {
+        let runs = DropSection27.Runs(visible: full.visible, hidden: full.hidden)
+        #expect(DropSection27.section(dropped: item(at: 150), runs: runs, current: .alwaysHidden) == nil)
+        #expect(DropSection27.section(dropped: item(at: 250), runs: runs, current: .alwaysHidden) == .hidden)
+        #expect(DropSection27.section(dropped: item(at: 450), runs: runs, current: .alwaysHidden) == .visible)
+        // Only the visible run drawn: left of it is still the application's own place.
+        let visibleOnly = DropSection27.Runs(visible: full.visible)
+        #expect(DropSection27.section(dropped: item(at: 350), runs: visibleOnly, current: .alwaysHidden) == nil)
+        // A hidden application left of everything is still hidden, not always hidden.
+        #expect(DropSection27.section(dropped: item(at: 150), runs: runs, current: .hidden) == nil)
+    }
+
+    @Test("An item folded behind the overflow button is judged at the button")
+    func foldedItemAtButton() {
+        let button = CGRect(x: 80, y: 0, width: 18, height: 24)
+        let folded = CGRect(x: 82, y: 0, width: 20, height: 24)
+        #expect(DropSection27.judgedFrame(folded, overflowButton: button) == button)
+        #expect(DropSection27.judgedFrame(item(at: 250), overflowButton: button) == item(at: 250))
+        #expect(DropSection27.judgedFrame(folded, overflowButton: nil) == folded)
+        // Folded always-hidden items mark the run at the button, so a drop there is always hidden.
+        let runs = DropSection27.Runs(visible: full.visible, hidden: full.hidden, alwaysHidden: [button])
+        #expect(DropSection27.section(dropped: button, runs: runs, current: .hidden) == .alwaysHidden)
+    }
+
     @Test("The nearest of an application's items is the one dropped")
     func nearest() {
         let frames = [item(at: 100), item(at: 300), item(at: 420)]
