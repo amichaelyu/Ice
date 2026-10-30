@@ -25,7 +25,8 @@ import OSLog
 ///
 /// The switch is the user's as much as Ice's, so Ice records every application it turns off,
 /// in `MacOS27NativeDisallowed`, and turns back on only those. An application the user turned
-/// off themselves is never touched. The record outlives Ice: whatever is in it is turned back on
+/// off themselves is never touched, unless it is also in one of Ice's hidden sections: then it
+/// is shown whenever that section is. The record outlives Ice: whatever is in it is turned back on
 /// at the next launch, so a crash does not leave applications hidden for good.
 ///
 /// The group container is closed to every process but MenuBarAgent and ControlCenter, which
@@ -61,8 +62,10 @@ final class NativeAllowListConcealer27 {
     /// Turns off the given applications that are tracked and allowed, and turns back on the ones
     /// Ice turned off earlier that are no longer among them.
     ///
-    /// An application that is already off and that Ice did not turn off is the user's choice,
-    /// and is left alone and not recorded. One that is not tracked yet — it has never created an
+    /// An application that is already off is recorded all the same: it is in one of Ice's hidden
+    /// sections, so it is Ice's to bring back when that section is shown. Left unrecorded, as the
+    /// user's own choice, it was never turned on again, and a revealed always-hidden section
+    /// drew nothing (seen on macOS 27.0.1, 2026-10-29). One that is not tracked yet — it has never created an
     /// item — cannot be turned off until MenuBarAgent adds it, so the caller applies again once
     /// it has had the chance; those are returned, with whether the preference was written at all
     /// (the caller spaces writes out, see `WritePacer27`).
@@ -73,10 +76,11 @@ final class NativeAllowListConcealer27 {
         let states = TrackedApplications27.allowedStates(of: entries)
         let recorded = Self.recorded
         let toDisallow = Set(concealed.filter { states[$0] == true })
+        let alreadyOff = Set(concealed.filter { states[$0] == false })
         let toAllow = recorded.subtracting(concealed)
         // Recorded before the write: should Ice die between the two, the next launch turns these
         // back on, and every one of them was on a moment ago.
-        Self.recorded = recorded.union(toDisallow)
+        Self.recorded = recorded.union(toDisallow).union(alreadyOff)
         let disallowed = TrackedApplications27.settingAllowed(false, for: toDisallow, in: array, entries: entries)
         let allowed = TrackedApplications27.settingAllowed(true, for: toAllow, in: disallowed.array, entries: entries)
         let wrote = !disallowed.changed.isEmpty || !allowed.changed.isEmpty
