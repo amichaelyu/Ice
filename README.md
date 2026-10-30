@@ -10,7 +10,7 @@
 >
 > Known limitations on macOS 27:
 >
-> - Items cannot be reordered on the bar. macOS 27 arranges them itself; sections come from the per-application layout in Ice's settings.
+> - Sections are per application: all of an app's items move between sections together. Reordering in the Menu Bar Layout editor needs Full Disk Access, like the native hiding method.
 > - While an app is hidden, it shows as not allowed in System Settings > Control Center. Ice turns it back on when it is shown again and when Ice quits, and at the next launch if Ice did not quit cleanly.
 > - With assessment mode, Control Centre's modules are not drawn while items are hidden, and opening a system item's panel, such as the clock or Wi-Fi, takes about 150 ms longer.
 
