@@ -4,11 +4,76 @@
 //
 
 import AppKit
+import CryptoKit
 
 /// Renders a copy of a wallpaper with a solid black strip across the menu bar area,
 /// so the notch disappears into it.
 @MainActor
 enum NotchWallpaperRenderer {
+    /// Everything a generated wallpaper is rendered from.
+    ///
+    /// Equal requests render the same image, so the file name is derived from the
+    /// request. A file that already exists is the image the request would render.
+    struct Request {
+        /// The user's original wallpaper, or `nil` for a solid color.
+        let original: URL?
+
+        /// The width of the screen, in pixels.
+        let width: Int
+
+        /// The height of the screen, in pixels.
+        let height: Int
+
+        /// The height of the black strip, in pixels.
+        let barHeight: CGFloat
+
+        /// The radius of the top corners below the strip, in pixels, or zero for square corners.
+        let cornerRadius: CGFloat
+
+        /// The color used when the original is not a readable image.
+        let fillColor: NSColor
+
+        /// The name of the file that the request renders to.
+        let fileName: String
+
+        /// Creates the request for the given screen, or returns `nil` if the screen has no size.
+        @MainActor
+        init?(original: URL?, for screen: NSScreen, roundedCorners: Bool) {
+            let scale = screen.backingScaleFactor
+            let width = Int((screen.frame.width * scale).rounded())
+            let height = Int((screen.frame.height * scale).rounded())
+            guard width > 0, height > 0 else {
+                return nil
+            }
+            let barHeight = (NotchWallpaperRenderer.menuBarHeight(for: screen) * scale).rounded(.up)
+            let cornerRadius = roundedCorners ? NotchWallpaperRenderer.cornerRadius * scale : 0
+            let fillColor = (NSWorkspace.shared.desktopImageOptions(for: screen)?[.fillColor] as? NSColor)?
+                .usingColorSpace(.sRGB) ?? NotchWallpaperRenderer.fallbackColor
+
+            // The original's modification date and size stand in for its contents, so
+            // that editing the file in place renders a new image.
+            let values = try? original?.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            let key = [
+                original?.standardizedFileURL.path ?? "",
+                values?.contentModificationDate.map { "\($0.timeIntervalSince1970)" } ?? "",
+                values?.fileSize.map { "\($0)" } ?? "",
+                "\(width)x\(height)",
+                "\(barHeight)",
+                "\(cornerRadius)",
+                "\(fillColor.redComponent),\(fillColor.greenComponent),\(fillColor.blueComponent)",
+            ].joined(separator: "\n")
+            let hex = SHA256.hash(data: Data(key.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+
+            self.original = original
+            self.width = width
+            self.height = height
+            self.barHeight = barHeight
+            self.cornerRadius = cornerRadius
+            self.fillColor = fillColor
+            self.fileName = "notch-\(hex).png"
+        }
+    }
+
     /// The color used when the wallpaper is neither a readable image nor has a fill color.
     static let fallbackColor = NSColor(srgbRed: 0x1E / 255.0, green: 0x1E / 255.0, blue: 0x1E / 255.0, alpha: 1)
 
@@ -60,27 +125,17 @@ enum NotchWallpaperRenderer {
         return image
     }
 
-    /// Renders the wallpaper for the given screen and returns it as PNG data.
+    /// Renders the wallpaper for the given request and returns it as PNG data.
     ///
     /// The canvas starts black, and the original is drawn aspect-filled inside a clip
     /// that leaves the menu bar strip (and, optionally, the top corners) black.
-    ///
-    /// - Parameters:
-    ///   - original: The user's original wallpaper, or `nil` for a solid color.
-    ///   - screen: The screen to render the wallpaper for, at its pixel size.
-    ///   - roundedCorners: Whether to round the top corners below the strip.
-    static func render(original: URL?, for screen: NSScreen, roundedCorners: Bool) -> Data? {
-        let scale = screen.backingScaleFactor
-        let width = Int((screen.frame.width * scale).rounded())
-        let height = Int((screen.frame.height * scale).rounded())
+    static func render(_ request: Request) -> Data? {
         guard
-            width > 0,
-            height > 0,
             let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
             let context = CGContext(
                 data: nil,
-                width: width,
-                height: height,
+                width: request.width,
+                height: request.height,
                 bitsPerComponent: 8,
                 bytesPerRow: 0,
                 space: colorSpace,
@@ -90,24 +145,23 @@ enum NotchWallpaperRenderer {
             return nil
         }
 
-        let canvas = CGRect(x: 0, y: 0, width: width, height: height)
+        let canvas = CGRect(x: 0, y: 0, width: request.width, height: request.height)
         context.interpolationQuality = .high
 
         context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
         context.fill(canvas)
 
-        let bar = (menuBarHeight(for: screen) * scale).rounded(.up)
-        let wallpaperArea = CGRect(x: 0, y: 0, width: canvas.width, height: canvas.height - bar)
+        let wallpaperArea = CGRect(x: 0, y: 0, width: canvas.width, height: canvas.height - request.barHeight)
         context.saveGState()
-        if roundedCorners {
-            context.addPath(roundedTopPath(in: wallpaperArea, radius: cornerRadius * scale))
+        if request.cornerRadius > 0 {
+            context.addPath(roundedTopPath(in: wallpaperArea, radius: request.cornerRadius))
             context.clip()
         } else {
             context.clip(to: wallpaperArea)
         }
 
         if
-            let image = loadImage(original),
+            let image = loadImage(request.original),
             let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
         {
             // Aspect-fill, centered, cropped.
@@ -125,9 +179,7 @@ enum NotchWallpaperRenderer {
             context.draw(cgImage, in: rect)
         } else {
             // Solid color wallpaper (or unreadable image): use the desktop fill color.
-            let color = (NSWorkspace.shared.desktopImageOptions(for: screen)?[.fillColor] as? NSColor)?
-                .usingColorSpace(.sRGB) ?? fallbackColor
-            context.setFillColor(color.cgColor)
+            context.setFillColor(request.fillColor.cgColor)
             context.fill(canvas)
         }
         context.restoreGState()

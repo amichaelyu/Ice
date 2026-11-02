@@ -13,6 +13,13 @@ import OSLog
 /// solid black strip under the menu bar, and sets it as the desktop picture. It remembers
 /// the user's original wallpaper per screen, regenerates when the user picks a new one,
 /// and restores the original when the feature is turned off or the app quits.
+///
+/// macOS records a wallpaper for every space and every display it has seen, but Ice can
+/// only change the one showing. A generated file therefore outlives the moment it was
+/// set: a space or a disconnected display may still name it, and shows the stock macOS
+/// wallpaper if it is gone. Generated files are named after what they were rendered from,
+/// so that the same screen and wallpaper reuse the same file, and a file is deleted only
+/// once macOS no longer names it.
 @MainActor
 final class NotchHidingManager: ObservableObject {
     /// The directory that generated wallpapers are written to.
@@ -35,6 +42,21 @@ final class NotchHidingManager: ObservableObject {
     /// as `[screenID: path]`.
     private static let legacyOriginalsKey = "originalWallpapers"
 
+    /// The file in which macOS records the wallpaper of every space and display.
+    private static let wallpaperStoreURL = URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent("Library/Application Support/com.apple.wallpaper/Store/Index.plist")
+
+    /// The number of generated wallpapers kept, newest first, beyond those that are
+    /// showing or that the wallpaper store names.
+    private static let recentWallpaperLimit = 6
+
+    /// The wallpaper macOS reports for a screen it has nothing usable to show on,
+    /// while it draws its stock wallpaper there.
+    ///
+    /// Seen on macOS 27.0 (2026-11-02) for an external display as it was connected, with
+    /// no trace of it in the wallpaper store: it is a fallback, not the user's choice.
+    private static let fallbackWallpaperPath = "/System/Library/CoreServices/DefaultDesktop.heic"
+
     /// The user's Application Support directory.
     private nonisolated static var applicationSupportDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -49,6 +71,12 @@ final class NotchHidingManager: ObservableObject {
 
     /// The poll timer and system observers, alive only while the notch is hidden.
     private var activeCancellables = Set<AnyCancellable>()
+
+    /// A Boolean value that indicates whether the screens changed and have not yet settled.
+    ///
+    /// While a display is being connected, its wallpaper may not be the one macOS will
+    /// settle on, and recording it as the user's original would keep it for good.
+    private var isReconfiguringScreens = false
 
     /// Logger for the notch hiding manager.
     private let logger = Logger(category: "NotchHidingManager")
@@ -141,6 +169,14 @@ final class NotchHidingManager: ObservableObject {
             }
             .store(in: &c)
 
+        // Hold off polling until the screens settle.
+        NotificationCenter.default
+            .publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .sink { [weak self] _ in
+                self?.isReconfiguringScreens = true
+            }
+            .store(in: &c)
+
         // Resolution or arrangement changed: regenerate at the new size. Screen
         // changes often arrive in bursts, so wait for them to settle.
         NotificationCenter.default
@@ -150,6 +186,7 @@ final class NotchHidingManager: ObservableObject {
                 guard let self else {
                     return
                 }
+                isReconfiguringScreens = false
                 if isEnabled {
                     applyAll()
                 } else {
@@ -165,6 +202,7 @@ final class NotchHidingManager: ObservableObject {
     /// Stops the poll timer and system observers.
     private func stop() {
         activeCancellables.removeAll()
+        isReconfiguringScreens = false
         logger.info("Stopped hiding the notch")
     }
 
@@ -189,7 +227,23 @@ final class NotchHidingManager: ObservableObject {
     }
 
     /// Returns a persistent identifier for the given screen.
+    ///
+    /// This is the display's UUID, which belongs to one monitor. The display number
+    /// does not: macOS hands out the same small numbers to whichever displays are
+    /// connected, so two monitors used at different times can share one.
     static func screenID(_ screen: NSScreen) -> String {
+        if
+            let uuid = CGDisplayCreateUUIDFromDisplayID(screen.displayID)?.takeRetainedValue(),
+            let string = CFUUIDCreateString(nil, uuid)
+        {
+            return string as String
+        }
+        return legacyScreenID(screen)
+    }
+
+    /// Returns the identifier that Ice and NotchHider used for the given screen
+    /// before identifying screens by UUID: the display number.
+    private static func legacyScreenID(_ screen: NSScreen) -> String {
         if let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
             return number.stringValue
         }
@@ -230,20 +284,38 @@ final class NotchHidingManager: ObservableObject {
         Defaults.set(paths, forKey: key)
     }
 
+    /// Records the given wallpaper, which Ice did not generate, as the user's original
+    /// for the given screen.
+    ///
+    /// macOS's fallback wallpaper does not replace an original already recorded. Taken
+    /// for the user's choice, it was put under the black strip and restored on quit.
+    private func recordOriginal(_ url: URL, for screen: NSScreen) {
+        let id = Self.screenID(screen)
+        let recorded = paths(forKey: .notchOriginalWallpapers)[id]
+        guard recorded != url.path else {
+            return
+        }
+        if url.path == Self.fallbackWallpaperPath, original(for: screen) != nil {
+            return
+        }
+        setPath(url.path, for: id, forKey: .notchOriginalWallpapers)
+    }
+
     /// Returns the user's original wallpaper for the given screen.
     ///
-    /// If Ice has not recorded one, falls back to the original that the standalone
-    /// NotchHider app recorded. A user who switches from NotchHider to Ice has
-    /// NotchHider's black-bar copy as their current wallpaper, and only NotchHider
-    /// knows which wallpaper it replaced.
+    /// If Ice has not recorded one under the screen's UUID, falls back to the one
+    /// recorded under its display number, first by Ice and then by the standalone
+    /// NotchHider app. A user who switches from NotchHider to Ice has NotchHider's
+    /// black-bar copy as their current wallpaper, and only NotchHider knows which
+    /// wallpaper it replaced.
     private func original(for screen: NSScreen) -> URL? {
-        let id = Self.screenID(screen)
-        if let path = paths(forKey: .notchOriginalWallpapers)[id] {
+        let originals = paths(forKey: .notchOriginalWallpapers)
+        if let path = originals[Self.screenID(screen)] ?? originals[Self.legacyScreenID(screen)] {
             return URL(fileURLWithPath: path)
         }
         let legacy = UserDefaults(suiteName: Self.legacySuiteName)?
             .dictionary(forKey: Self.legacyOriginalsKey) as? [String: String]
-        if let path = legacy?[id] {
+        if let path = legacy?[Self.legacyScreenID(screen)] {
             let url = URL(fileURLWithPath: path)
             return isGenerated(url) ? nil : url
         }
@@ -256,56 +328,96 @@ final class NotchHidingManager: ObservableObject {
         guard let url else {
             return false
         }
-        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        let path = Self.canonicalPath(url)
         for directory in [outputDirectory, legacyOutputDirectory] {
-            let directoryPath = directory.standardizedFileURL.resolvingSymlinksInPath().path
-            if path.hasPrefix(directoryPath + "/") {
+            if path.hasPrefix(Self.canonicalPath(directory) + "/") {
                 return true
             }
         }
         return paths(forKey: .notchGeneratedWallpapers).values.contains(url.standardizedFileURL.path)
     }
 
+    /// Returns the given file URL's path with symbolic links resolved, for comparing
+    /// paths that may be spelled differently.
+    private static func canonicalPath(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    /// Returns the request for the generated wallpaper of the given screen.
+    private func request(for screen: NSScreen) -> NotchWallpaperRenderer.Request? {
+        NotchWallpaperRenderer.Request(
+            original: original(for: screen),
+            for: screen,
+            roundedCorners: settings?.notchRoundedCorners ?? true
+        )
+    }
+
+    /// Returns the URL of the file that the given request renders to.
+    private func url(for request: NotchWallpaperRenderer.Request) -> URL {
+        outputDirectory.appendingPathComponent(request.fileName)
+    }
+
+    /// Returns a Boolean value that indicates whether the given wallpaper is the
+    /// generated one last set on the given screen, and still exists.
+    private func isUpToDate(_ current: URL, for screen: NSScreen) -> Bool {
+        guard let latest = paths(forKey: .notchGeneratedWallpapers)[Self.screenID(screen)] else {
+            return false
+        }
+        return Self.canonicalPath(current) == Self.canonicalPath(URL(fileURLWithPath: latest))
+            && FileManager.default.fileExists(atPath: latest)
+    }
+
     // MARK: Apply and Restore
 
-    /// Checks each screen's wallpaper, regenerating only when the user picked a new one.
+    /// Checks each screen's wallpaper, regenerating only when the user picked a new one,
+    /// or when a generated one is outdated or missing.
     ///
-    /// This compares URLs only, so it is cheap enough to run every few seconds.
+    /// This compares URLs and reads file metadata only, so it is cheap enough to run
+    /// every few seconds.
     func poll() {
+        guard !isReconfiguringScreens else {
+            return
+        }
+        var changed = false
         for screen in NSScreen.screens {
             guard let current = NSWorkspace.shared.desktopImageURL(for: screen) else {
                 continue
             }
             if isGenerated(current) {
-                // A generated image is showing. If it should no longer be, fix it.
                 if !isEnabled || !isTarget(screen) {
-                    restore(screen)
+                    // A generated image is showing, and should no longer be.
+                    changed = restore(screen) || changed
+                } else if !isUpToDate(current, for: screen) {
+                    // A space or display that kept an older generated image, which
+                    // may have been deleted and replaced by the stock wallpaper.
+                    changed = apply(to: screen) || changed
                 }
                 continue
             }
             // A wallpaper we did not create: remember it as the user's original.
-            let id = Self.screenID(screen)
-            if paths(forKey: .notchOriginalWallpapers)[id] != current.path {
-                setPath(current.path, for: id, forKey: .notchOriginalWallpapers)
-            }
+            recordOriginal(current, for: screen)
             if isEnabled && isTarget(screen) {
-                apply(to: screen)
+                changed = apply(to: screen) || changed
             }
+        }
+        if changed {
+            removeUnusedWallpapers()
         }
     }
 
-    /// Regenerates and sets the wallpaper on every target screen, and restores the others.
+    /// Sets the generated wallpaper on every target screen, and restores the others.
     func applyAll() {
         for screen in NSScreen.screens {
             if isEnabled && isTarget(screen) {
                 if let current = NSWorkspace.shared.desktopImageURL(for: screen), !isGenerated(current) {
-                    setPath(current.path, for: Self.screenID(screen), forKey: .notchOriginalWallpapers)
+                    recordOriginal(current, for: screen)
                 }
                 apply(to: screen)
             } else {
                 restore(screen)
             }
         }
+        removeUnusedWallpapers()
     }
 
     /// Puts the original wallpaper back on every screen showing a generated one.
@@ -313,37 +425,55 @@ final class NotchHidingManager: ObservableObject {
         for screen in NSScreen.screens {
             restore(screen)
         }
+        removeUnusedWallpapers()
     }
 
-    /// Renders and sets the wallpaper for the given screen.
-    private func apply(to screen: NSScreen) {
+    /// Sets the generated wallpaper for the given screen, rendering it only if no
+    /// file for it exists yet.
+    ///
+    /// - Returns: Whether the screen's wallpaper changed.
+    @discardableResult
+    private func apply(to screen: NSScreen) -> Bool {
         let id = Self.screenID(screen)
-        guard
-            let png = NotchWallpaperRenderer.render(
-                original: original(for: screen),
-                for: screen,
-                roundedCorners: settings?.notchRoundedCorners ?? true
-            )
-        else {
-            logger.error("Failed to render wallpaper for screen \(id, privacy: .public)")
-            return
+        guard let request = request(for: screen) else {
+            logger.error("No size to render a wallpaper for screen \(id, privacy: .public)")
+            return false
         }
+        let url = url(for: request)
+        let fileManager = FileManager.default
         do {
-            try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-            let stamp = Int(Date().timeIntervalSince1970 * 1000)
-            let url = outputDirectory.appendingPathComponent("screen-\(id)-\(stamp).png")
-            try png.write(to: url, options: .atomic)
-            // Record before setting, so a poll treats it as generated.
+            if fileManager.fileExists(atPath: url.path) {
+                // Mark it as recently used, so it is among the last to be deleted.
+                try? fileManager.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+            } else {
+                guard let png = NotchWallpaperRenderer.render(request) else {
+                    logger.error("Failed to render wallpaper for screen \(id, privacy: .public)")
+                    return false
+                }
+                try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+                try png.write(to: url, options: .atomic)
+            }
+            // Record before setting, so a poll treats it as generated and up to date.
             setPath(url.path, for: id, forKey: .notchGeneratedWallpapers)
+            if NSWorkspace.shared.desktopImageURL(for: screen).map(Self.canonicalPath) == Self.canonicalPath(url) {
+                return false
+            }
             try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: Self.options(for: screen))
-            deleteStale(for: id, keeping: url)
+            return true
         } catch {
             logger.error("Failed to set wallpaper for screen \(id, privacy: .public): \(error)")
+            return false
         }
     }
 
     /// Puts the original wallpaper back on the given screen, if a generated one is showing.
-    private func restore(_ screen: NSScreen) {
+    ///
+    /// The generated file is left in place: other spaces, and other displays, may
+    /// still show it.
+    ///
+    /// - Returns: Whether the screen's wallpaper changed.
+    @discardableResult
+    private func restore(_ screen: NSScreen) -> Bool {
         let id = Self.screenID(screen)
         guard
             let current = NSWorkspace.shared.desktopImageURL(for: screen),
@@ -351,7 +481,7 @@ final class NotchHidingManager: ObservableObject {
             let original = original(for: screen),
             FileManager.default.fileExists(atPath: original.path)
         else {
-            return
+            return false
         }
         do {
             var options = NSWorkspace.shared.desktopImageOptions(for: screen) ?? [:]
@@ -361,9 +491,10 @@ final class NotchHidingManager: ObservableObject {
             }
             try NSWorkspace.shared.setDesktopImageURL(original, for: screen, options: options)
             setPath(nil, for: id, forKey: .notchGeneratedWallpapers)
-            deleteStale(for: id, keeping: nil)
+            return true
         } catch {
             logger.error("Failed to restore wallpaper for screen \(id, privacy: .public): \(error)")
+            return false
         }
     }
 
@@ -379,17 +510,74 @@ final class NotchHidingManager: ObservableObject {
         return options
     }
 
-    /// Deletes the generated wallpapers for the given screen, except `keeping`.
-    private func deleteStale(for screenID: String, keeping: URL?) {
-        guard let files = try? FileManager.default.contentsOfDirectory(at: outputDirectory, includingPropertiesForKeys: nil) else {
+    // MARK: Cleanup
+
+    /// Deletes the generated wallpapers that nothing shows any more.
+    ///
+    /// A file is kept while a connected screen shows it, while it is among the most
+    /// recently used, or while the wallpaper store names it for any space or display.
+    /// If the store cannot be read, only the first two hold.
+    private func removeUnusedWallpapers() {
+        let fileManager = FileManager.default
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: outputDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else {
             return
         }
-        let prefix = "screen-\(screenID)-"
-        for file in files where file.lastPathComponent.hasPrefix(prefix) && file.pathExtension == "png" {
-            if let keeping, file.standardizedFileURL.path == keeping.standardizedFileURL.path {
-                continue
-            }
-            try? FileManager.default.removeItem(at: file)
+        let showing = Set(NSScreen.screens.compactMap {
+            NSWorkspace.shared.desktopImageURL(for: $0).map(Self.canonicalPath)
+        })
+        func modificationDate(_ url: URL) -> Date {
+            (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
         }
+        let candidates = files
+            .filter { $0.pathExtension == "png" && !showing.contains(Self.canonicalPath($0)) }
+            .sorted { modificationDate($0) > modificationDate($1) }
+            .dropFirst(Self.recentWallpaperLimit)
+        guard !candidates.isEmpty else {
+            return
+        }
+        let named = Self.fileNamesInWallpaperStore()
+        if named == nil {
+            logger.warning("Could not read the wallpaper store, so keeping only recent wallpapers")
+        }
+        for file in candidates where named?.contains(file.lastPathComponent) != true {
+            try? fileManager.removeItem(at: file)
+        }
+    }
+
+    /// Returns the names of the generated wallpapers that the wallpaper store names
+    /// for any space or display, or `nil` if the store cannot be read.
+    ///
+    /// The store is a property list, and each wallpaper choice in it is a property
+    /// list of its own, embedded as data, that holds the wallpaper's URL.
+    private static func fileNamesInWallpaperStore() -> Set<String>? {
+        guard
+            let data = try? Data(contentsOf: wallpaperStoreURL),
+            let plist = try? PropertyListSerialization.propertyList(from: data, format: nil)
+        else {
+            return nil
+        }
+        var names = Set<String>()
+        func collect(_ value: Any) {
+            switch value {
+            case let dictionary as [String: Any]:
+                dictionary.values.forEach(collect)
+            case let array as [Any]:
+                array.forEach(collect)
+            case let data as Data:
+                if let nested = try? PropertyListSerialization.propertyList(from: data, format: nil) {
+                    collect(nested)
+                }
+            case let string as String where string.contains("NotchWallpapers/"):
+                let path = URL(string: string)?.path ?? string
+                names.insert((path as NSString).lastPathComponent)
+            default:
+                break
+            }
+        }
+        collect(plist)
+        return names
     }
 }
